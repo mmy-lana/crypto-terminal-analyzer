@@ -62,6 +62,16 @@ export interface TerminalContextValue {
   resetPortfolio: () => void;
   notice: TerminalNotice | null;
   dismissNotice: () => void;
+  /**
+   * Active persistence failure, or `null` when the ledger is being saved.
+   *
+   * Deliberately separate from `notice`: that channel is transient and the next
+   * action overwrites it, which is exactly wrong for this. A fill announces
+   * itself moments after the write that failed, so pushing the reason onto the
+   * notice bar alone means the operator reads "FILLED" and never learns the fill
+   * is session-only. The shell renders this as a standing alarm instead.
+   */
+  storageError: string | null;
 }
 
 const TerminalContext = createContext<TerminalContextValue | null>(null);
@@ -75,7 +85,7 @@ interface Transaction<T> {
 }
 
 export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const { data: schema, updateSchema, resetPortfolio } = useTerminalStorage();
+  const { data: schema, updateSchema, resetPortfolio, storageError } = useTerminalStorage();
 
   // Seed synchronously from the base universe so the first paint never shows a
   // null quote (plan §3.5).
@@ -83,6 +93,20 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [notice, setNotice] = useState<TerminalNotice | null>(null);
+
+  // A persistence failure is otherwise invisible: the trade fills, the panels
+  // update, the operator refreshes, and the paper ledger is gone. `storageError`
+  // is exposed below and the shell renders it as a standing alarm for that
+  // reason.
+  //
+  // It is deliberately NOT pushed onto `notice`. That channel is transient and
+  // every state change writes to it, and the writer that matters here loses the
+  // race: a failed write is discovered by an effect that runs *before*
+  // `executeTrade` announces its own fill, so the "FILLED" notice overwrites the
+  // storage reason one commit later. Measured, not assumed — the regression
+  // suite in `src/__tests__/storageFailure.test.tsx` caught exactly that. The
+  // alarm is `role="alert"`, so it is announced on appearance regardless.
+
 
   // The ref, not the state, is the re-entrancy guard: `isSubmitting` only
   // re-renders after the fact, so two clicks in the same task would both pass
@@ -175,7 +199,20 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
           const outcome = executeMarketOrder(prev, asset, side, amount);
           return {
             updatedSchema: outcome.success ? outcome.updatedSchema : prev,
-            value: { success: outcome.success, error: outcome.error },
+            value: {
+              success: outcome.success,
+              error: outcome.error,
+              // Captured inside the updater, where `prev` is the schema this
+              // order was actually judged against. Reading `schema` from this
+              // closure would report the cash and position of a render that
+              // may predate a limit fill landing on the same tick.
+              remedyContext: {
+                symbol: asset.symbol,
+                cash: prev.cashBalance,
+                position: prev.holdings[asset.symbol]?.amount ?? 0,
+                markPrice: asset.currentPrice,
+              },
+            },
           };
         });
 
@@ -189,15 +226,10 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
           // bar is read by a person mid-trade, so it gets the sentence.
           pushNotice(
             'WARN',
-            `REJECTED ${side} ${formatQuantity(amount)} ${asset.symbol}. ${describeExecutionError(result.error, {
-              symbol: asset.symbol,
-              cash: schema.cashBalance,
-              position: livePortfolio.holdings[asset.symbol]?.amount ?? 0,
-              markPrice: asset.currentPrice,
-            })}`
+            `REJECTED ${side} ${formatQuantity(amount)} ${asset.symbol}. ${describeExecutionError(result.error, result.remedyContext)}`
           );
         }
-        return result;
+        return { success: result.success, error: result.error };
       }),
     [runTransaction, withSubmissionLock, pushNotice]
   );
@@ -214,7 +246,19 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
           const outcome = placeLimitOrder(prev, asset, side, amount, price);
           return {
             updatedSchema: outcome.success ? outcome.updatedSchema : prev,
-            value: { success: outcome.success, error: outcome.error },
+            value: {
+              success: outcome.success,
+              error: outcome.error,
+              // Same rule as the market path: the remedy must quote the state
+              // the order was validated against, not the render it was issued
+              // from — a resting order may have filled in between.
+              remedyContext: {
+                symbol: asset.symbol,
+                cash: prev.cashBalance,
+                position: prev.holdings[asset.symbol]?.amount ?? 0,
+                markPrice: asset.currentPrice,
+              },
+            },
           };
         });
 
@@ -226,15 +270,10 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
         } else {
           pushNotice(
             'WARN',
-            `REJECTED ${side} ${formatQuantity(amount)} ${asset.symbol}. ${describeExecutionError(result.error, {
-              symbol: asset.symbol,
-              cash: schema.cashBalance,
-              position: livePortfolio.holdings[asset.symbol]?.amount ?? 0,
-              markPrice: asset.currentPrice,
-            })}`
+            `REJECTED ${side} ${formatQuantity(amount)} ${asset.symbol}. ${describeExecutionError(result.error, result.remedyContext)}`
           );
         }
-        return result;
+        return { success: result.success, error: result.error };
       }),
     [runTransaction, withSubmissionLock, pushNotice]
   );
@@ -311,6 +350,7 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
       resetPortfolio: handleReset,
       notice,
       dismissNotice,
+      storageError,
     }),
     [
       schema,
@@ -329,6 +369,7 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
       handleReset,
       notice,
       dismissNotice,
+      storageError,
     ]
   );
 

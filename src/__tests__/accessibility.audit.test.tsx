@@ -3,7 +3,7 @@
 // imports to an empty module, so `?raw` yields nothing here; the Node types
 // are pulled in for this file only, which keeps `process` and `node:*` out of
 // the app's own type environment rather than widening `types` project-wide.
-import { screen, within } from '@testing-library/react';
+import { act, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { setViewportWidth } from '../test/matchMediaMock';
@@ -313,7 +313,13 @@ describe('hover independence', () => {
 
 describe('live regions', () => {
   it('announces the system log politely', () => {
+    // The log is a TRADE/LEDGER workspace panel, not a permanent fixture, so
+    // the audit opens a workspace that owns it before checking the contract.
     renderApp();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /^LEDGER/ }));
+    });
+
     const log = screen.getByRole('log');
     expect(log.getAttribute('aria-live')).toBe('polite');
   });

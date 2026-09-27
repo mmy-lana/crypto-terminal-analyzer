@@ -23,11 +23,29 @@ const SIDE_FILTERS: SideFilter[] = ['ALL', 'BUY', 'SELL'];
 /** CSV fields match the visible columns so an export is a faithful copy. */
 const CSV_HEADER = ['Timestamp', 'Order', 'Side', 'Symbol', 'Amount', 'Price', 'Notional', 'Fee'] as const;
 
-function escapeCsvField(value: string): string {
-  if (/[",\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
+/** Leading characters a spreadsheet reads as the start of a formula. */
+const CSV_FORMULA_TRIGGERS = /^[=+\-@\t\r]/;
+
+/**
+ * Makes one value safe to write into a CSV cell.
+ *
+ * Two separate hazards, handled in this order:
+ *
+ *  1. **Formula injection (OWASP / CWE-1236).** A cell opening with `=`, `+`,
+ *     `-`, `@`, tab or carriage return is executed, not displayed, when the
+ *     file is opened in Excel, Numbers or Sheets — a `=HYPERLINK(...)` in an
+ *     order id or a symbol becomes a live exfiltration vector. A leading
+ *     apostrophe forces the cell to text. This runs *before* quoting so the
+ *     marker itself can never be swallowed by an escape.
+ *  2. **Delimiter injection.** A quote, comma or newline in the value would
+ *     otherwise split the row into extra columns.
+ */
+export function escapeCsvField(value: string): string {
+  let sanitized = CSV_FORMULA_TRIGGERS.test(value) ? `'${value}` : value;
+  if (/[",\n]/.test(sanitized)) {
+    return `"${sanitized.replace(/"/g, '""')}"`;
   }
-  return value;
+  return sanitized;
 }
 
 /**

@@ -194,9 +194,16 @@ const AssetStrip: React.FC<{ className?: string }> = ({ className = '' }) => {
  * Responsive shell.
  *
  * Three arrangements come out of one component tree (plan §3.7 / §5):
- *   1024px+ — 3-column workstation: watch & logs · book & ticket · portfolio
+ *   1024px+ — 3-column workstation
  *   768px+  — 2-column split, 60% analysis / 40% execution
  *   <768px  — one column at a time, selected by the docked tab bar
+ *
+ * Every arrangement above the phone is scoped to `activeTab`, so the header
+ * tabs and the `1`-`4` hotkeys genuinely switch workspaces instead of leaving
+ * the operator with four tabs and one undifferentiated wall of panels. Each tab
+ * gets the panels that serve it: MONITOR watches the market, TRADE holds the
+ * ticket beside the book, ANALYTICS the inspector beside the risk panel, and
+ * LEDGER the full-width settlement history.
  *
  * The breakpoint comes from `matchMedia` rather than a width measured on every
  * frame, so resizing a window does not re-render the tree on each pixel.
@@ -207,8 +214,17 @@ export const TerminalLayout: React.FC<TerminalLayoutProps> = ({
   onOpenCommand,
   className = '',
 }) => {
-  const { livePortfolio, riskMetrics, schema, assets, setSelectedSymbol, resetPortfolio, notice, dismissNotice } =
-    useTerminal();
+  const {
+    livePortfolio,
+    riskMetrics,
+    schema,
+    assets,
+    setSelectedSymbol,
+    resetPortfolio,
+    notice,
+    dismissNotice,
+    storageError,
+  } = useTerminal();
   const isMobile = useIsMobile();
   const isDesktop = useIsDesktop();
 
@@ -331,6 +347,16 @@ export const TerminalLayout: React.FC<TerminalLayoutProps> = ({
       <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         {chrome}
 
+        {storageError !== null ? (
+          <div
+            role="alert"
+            className="flex items-center gap-2 border-b border-rose-500/50 bg-rose-500/15 px-2 py-1.5 text-[10px] text-rose-500"
+          >
+            <span className="shrink-0 font-bold tracking-[0.12em]">STORAGE</span>
+            <span className="min-w-0 flex-1 break-words">{storageError}</span>
+          </div>
+        ) : null}
+
         {notice !== null ? (
           <div
             role="status"
@@ -389,33 +415,102 @@ export const TerminalLayout: React.FC<TerminalLayoutProps> = ({
             </div>
           ) : isDesktop ? (
             <div className="grid min-h-0 flex-1 grid-cols-3 gap-px overflow-hidden">
-              <div className="flex min-h-0 flex-col gap-px">
-                {assetStrip}
-                <div className="flex min-h-0 flex-[3] flex-col">{watchlistPanel}</div>
-                <div className="flex min-h-0 flex-[2] flex-col">{logPanel}</div>
-              </div>
-              <div className="flex min-h-0 flex-col gap-px">
-                <div className="flex min-h-0 flex-1 flex-col">{bookPanel}</div>
-                <div className="flex min-h-0 flex-[1.1] flex-col">{ticketPanel}</div>
-              </div>
-              <div className="flex min-h-0 flex-col gap-px">
-                <div className="flex min-h-0 flex-1 flex-col">{summaryPanel}</div>
-                <div className="flex min-h-0 flex-1 flex-col">{holdingsPanel}</div>
-              </div>
+              {activeTab === 'MONITOR' ? (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    {assetStrip}
+                    <div className="flex min-h-0 flex-1 flex-col">{watchlistPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{bookPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{holdingsPanel}</div>
+                    <div className="flex min-h-0 flex-1 flex-col">{summaryPanel}</div>
+                  </div>
+                </>
+              ) : activeTab === 'TRADE' ? (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    {assetStrip}
+                    <div className="flex min-h-0 flex-1 flex-col">{watchlistPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{bookPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-[1.2] flex-col">{ticketPanel}</div>
+                    <div className="flex min-h-0 flex-1 flex-col">{logPanel}</div>
+                  </div>
+                </>
+              ) : activeTab === 'ANALYTICS' ? (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{summaryPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{analyticsPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{holdingsPanel}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="col-span-2 flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{ledgerPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{logPanel}</div>
+                    <div className="flex min-h-0 flex-1 flex-col">{summaryPanel}</div>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[3fr_2fr] gap-px overflow-hidden">
-              <div className="flex min-h-0 flex-col gap-px">
-                {assetStrip}
-                <div className="flex min-h-0 flex-[3] flex-col">{watchlistPanel}</div>
-                <div className="flex min-h-0 flex-1 flex-col">{bookPanel}</div>
-                <div className="flex min-h-0 flex-[1.2] flex-col">{ticketPanel}</div>
-              </div>
-              <div className="flex min-h-0 flex-col gap-px">
-                <div className="flex min-h-0 flex-1 flex-col">{summaryPanel}</div>
-                <div className="flex min-h-0 flex-1 flex-col">{holdingsPanel}</div>
-                <div className="flex min-h-0 flex-1 flex-col">{logPanel}</div>
-              </div>
+              {activeTab === 'MONITOR' ? (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    {assetStrip}
+                    <div className="flex min-h-0 flex-1 flex-col">{watchlistPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{bookPanel}</div>
+                    <div className="flex min-h-0 flex-1 flex-col">{holdingsPanel}</div>
+                  </div>
+                </>
+              ) : activeTab === 'TRADE' ? (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    {assetStrip}
+                    <div className="flex min-h-0 flex-1 flex-col">{bookPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{ticketPanel}</div>
+                    <div className="flex min-h-0 flex-1 flex-col">{logPanel}</div>
+                  </div>
+                </>
+              ) : activeTab === 'ANALYTICS' ? (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{summaryPanel}</div>
+                    <div className="flex min-h-0 flex-1 flex-col">{analyticsPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{holdingsPanel}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{ledgerPanel}</div>
+                  </div>
+                  <div className="flex min-h-0 flex-col gap-px">
+                    <div className="flex min-h-0 flex-1 flex-col">{logPanel}</div>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </main>

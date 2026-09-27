@@ -108,6 +108,24 @@ describe('risk statistics', () => {
     expect(calculateSharpeRatio(returns)).toBeGreaterThan(0);
   });
 
+  it('drops non-finite observations instead of reporting NaN', () => {
+    const clean = [0.02, -0.01, 0.03, 0.005, 0.015];
+    const expected = calculateSharpeRatio(clean);
+
+    // One bad sample must not poison the moments of the whole series — a NaN
+    // Sharpe on the risk panel reads as "the maths is broken", not "one point
+    // was missing".
+    for (const poison of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(calculateSharpeRatio([...clean, poison])).toBe(expected);
+      expect(calculateSharpeRatio([poison, ...clean])).toBe(expected);
+    }
+  });
+
+  it('reports a zero Sharpe ratio when nothing usable is left', () => {
+    expect(calculateSharpeRatio([Number.NaN, Number.NaN])).toBe(0);
+    expect(calculateSharpeRatio([Number.NaN, 0.01, Number.POSITIVE_INFINITY])).toBe(0);
+  });
+
   it('guards the standard deviation against an empty or flat series', () => {
     expect(calculateStandardDeviation([])).toBe(0);
     expect(calculateStandardDeviation([0.05])).toBe(0);

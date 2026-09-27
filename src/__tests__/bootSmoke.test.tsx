@@ -136,8 +136,15 @@ describe('boot smoke test', () => {
     expect(text).toContain('100,000');
     expect(text).toContain(formatQuantity(1.25));
     expect(text).toContain(formatQuantity(8.5));
-    // One kernel line at boot, and no fabricated history.
-    expect(within(screen.getByRole('log')).getAllByRole('listitem').length).toBeLessThanOrEqual(1);
     expect(formatCurrency(0)).toBe('$0.00');
+
+    // One kernel line at boot, and no fabricated history. The system log is a
+    // TRADE/LEDGER workspace panel rather than a permanent fixture, so the
+    // ledger is where it is asserted — the claim is about the log's content,
+    // not about which workspace happens to be open.
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /^LEDGER/ }));
+    });
+    expect(within(screen.getByRole('log')).getAllByRole('listitem').length).toBeLessThanOrEqual(1);
   });
 });

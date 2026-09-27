@@ -5,7 +5,6 @@ import { TerminalProvider, useTerminal } from './context/TerminalContext';
 import { CommandPalette, ParsedCommand } from './components/compound/CommandPalette';
 import { ErrorBoundary } from './components/primitives/ErrorBoundary';
 import { TerminalLayout } from './layouts/TerminalLayout';
-import { useIsMobile } from './hooks/useMediaQuery';
 
 /** Tab shortcuts, matching the cues in the header bar. */
 const TAB_KEYS: Record<string, TerminalTab> = {
@@ -48,7 +47,6 @@ const TerminalScreen: React.FC = () => {
     focusTicket,
   } = useTerminal();
 
-  const isMobileLayout = useIsMobile();
   const [activeTab, setActiveTab] = useState<TerminalTab>('MONITOR');
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteSeed, setPaletteSeed] = useState('');
@@ -127,15 +125,15 @@ const TerminalScreen: React.FC = () => {
         return;
       }
 
-      // B/S arm the ticket's side. On a phone the ticket may not be on screen,
-      // so the shortcut also reveals it — arming a toggle nobody can see is
-      // worse than not binding the key at all.
+      // B/S arm the ticket's side. The ticket lives on the TRADE workspace at
+      // every breakpoint, so the shortcut also reveals that workspace: arming a
+      // toggle nobody can see is worse than not binding the key at all.
       const side = SIDE_KEYS[event.key.toLowerCase()];
       if (side !== undefined) {
         event.preventDefault();
         setOrderSide(side);
         focusTicket();
-        if (isMobileLayout) {
+        if (activeTab !== 'TRADE') {
           setActiveTab('TRADE');
         }
       }
@@ -143,7 +141,7 @@ const TerminalScreen: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPaletteOpen, openPalette, setOrderSide, focusTicket, isMobileLayout]);
+  }, [isPaletteOpen, openPalette, setOrderSide, focusTicket, activeTab]);
 
   return (
     <>

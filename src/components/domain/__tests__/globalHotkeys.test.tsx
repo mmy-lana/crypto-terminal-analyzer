@@ -35,12 +35,26 @@ describe('global hotkeys', () => {
     renderWithTerminal(<App />);
   };
 
+  /**
+   * Puts the order ticket on screen.
+   *
+   * The ticket is a TRADE-workspace panel, so a test that asserts on the
+   * ticket's resting state has to navigate there first — pressing `B`/`S` from
+   * another workspace is itself a behaviour, covered separately below.
+   */
+  const openTicketWorkspace = (): void => {
+    renderTerminal();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /^TRADE/ }));
+    });
+  };
+
   const sideButton = (name: RegExp): HTMLElement => screen.getByRole('button', { name });
 
   const amountField = (): HTMLElement => screen.getByLabelText('Amount');
 
   it('arms BUY with the B key and SELL with the S key', () => {
-    renderTerminal();
+    openTicketWorkspace();
 
     const sell = sideButton(/^SELL$/i);
     const buy = sideButton(/^BUY$/i);
@@ -87,7 +101,7 @@ describe('global hotkeys', () => {
   });
 
   it('leaves the keyboard alone while the operator is typing a number', () => {
-    renderTerminal();
+    openTicketWorkspace();
 
     const amount = amountField();
     act(() => {
@@ -109,7 +123,7 @@ describe('global hotkeys', () => {
   });
 
   it('does not hijack modified keystrokes the browser or OS owns', () => {
-    renderTerminal();
+    openTicketWorkspace();
 
     act(() => {
       fireEvent.keyDown(window, { key: 's', metaKey: true });
@@ -119,6 +133,20 @@ describe('global hotkeys', () => {
     });
 
     expect(sideButton(/^BUY$/i)).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('reveals the ticket when a side key is pressed from another workspace', () => {
+    // MONITOR has no ticket, so a plain arm would leave the operator flipping a
+    // toggle they cannot see. The shortcut has to bring the ticket with it.
+    renderTerminal();
+    expect(screen.queryByRole('form', { name: /order ticket/i })).not.toBeInTheDocument();
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 's' });
+    });
+
+    expect(screen.getByRole('form', { name: /order ticket/i })).toBeInTheDocument();
+    expect(sideButton(/^SELL$/i)).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('closes the palette on Escape and restores focus to the opener', () => {

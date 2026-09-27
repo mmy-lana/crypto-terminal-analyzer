@@ -48,18 +48,25 @@ const VARIANCE_EPSILON = 1e-12;
  * Returns `0` for series shorter than two observations or with zero variance —
  * a flat equity curve is not a risk-adjusted opportunity, it is an absence of
  * data, and reporting `Infinity` there would be misleading.
+ *
+ * Non-finite observations are dropped before the moments are taken. A single
+ * `NaN` in the input would otherwise make the mean `NaN` and collapse the
+ * reported Sharpe to `NaN` for the whole panel; a single `Infinity` would do
+ * the same with a far more alarming print. Both are worse than ignoring the
+ * sample, and the remaining observations are still a valid series.
  */
 export function calculateSharpeRatio(
   returns: number[],
   riskFreeRateDaily: number = DEFAULT_RISK_FREE_RATE_DAILY
 ): number {
-  if (returns.length < 2) return 0;
-  const meanReturn = returns.reduce((acc, r) => acc + r, 0) / returns.length;
+  const cleanReturns = returns.filter((r) => Number.isFinite(r));
+  if (cleanReturns.length < 2) return 0;
+  const meanReturn = cleanReturns.reduce((acc, r) => acc + r, 0) / cleanReturns.length;
   const variance =
-    returns.reduce((acc, r) => acc + Math.pow(r - meanReturn, 2), 0) /
-    (returns.length - 1);
+    cleanReturns.reduce((acc, r) => acc + Math.pow(r - meanReturn, 2), 0) /
+    (cleanReturns.length - 1);
   const stdDev = Math.sqrt(variance);
-  if (stdDev <= VARIANCE_EPSILON) return 0;
+  if (!Number.isFinite(stdDev) || stdDev <= VARIANCE_EPSILON) return 0;
   return Number((((meanReturn - riskFreeRateDaily) / stdDev) * Math.sqrt(TRADING_DAYS_PER_YEAR)).toFixed(2));
 }
 
