@@ -13,7 +13,9 @@
  *  - sequence-like values support zero-fill (`000417`).
  *
  * Everything is locale-stable (`en-US`) because the terminal grid math assumes
- * `.` as the decimal separator and `,` as the group separator.
+ * `.` as the decimal separator and `,` as the group separator. Grouping and
+ * calendar parts both go through `Intl`, so locale data is parsed once at
+ * module load rather than on every cell of every tick.
  */
 
 /** Rendered in place of any value that is not a finite number. */
@@ -33,8 +35,6 @@ export interface PercentFormatOptions {
   width?: number;
 }
 
-const TIME_PAD = 2;
-
 /** Coerces any numeric-ish input to a finite number, or returns `fallback`. */
 export function toFiniteNumber(value: number | null | undefined, fallback = 0): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -49,15 +49,34 @@ export function isDisplayableNumber(value: unknown): value is number {
 }
 
 /**
+ * `Intl.NumberFormat` is expensive to construct — it parses locale data every
+ * time — and a 500-row ledger asks for grouping two or three times per cell
+ * every second. One formatter per distinct decimal count is enough, and the
+ * decimal count is a small closed set, so this is effectively a constant.
+ */
+const numberFormatCache = new Map<number, Intl.NumberFormat>();
+
+function groupedFormatter(decimals: number): Intl.NumberFormat {
+  const cached = numberFormatCache.get(decimals);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const created = new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+    useGrouping: true,
+  });
+  numberFormatCache.set(decimals, created);
+  return created;
+}
+
+/**
  * Groups the absolute part of `value` with thousands separators and a fixed
  * number of decimals, e.g. `1,234,567.80`.
  */
 export function groupThousands(value: number, decimals: number): string {
   const safeDecimals = Math.max(0, Math.trunc(decimals));
-  return Math.abs(value).toLocaleString('en-US', {
-    minimumFractionDigits: safeDecimals,
-    maximumFractionDigits: safeDecimals,
-  });
+  return groupedFormatter(safeDecimals).format(Math.abs(value));
 }
 
 /** Pads `text` to `width` using the requested alignment. Never truncates. */
@@ -241,8 +260,60 @@ export function toDate(value: Date | string | number): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function padNumber(value: number, length: number = TIME_PAD): string {
-  return String(Math.trunc(value)).padStart(length, '0');
+/**
+ * UTC clock/date formatters, built once.
+ *
+ * `Intl.DateTimeFormat` is the right primitive for splitting an instant into
+ * calendar parts, but its *rendered* shape is locale-owned, and the ledger
+ * needs a fixed `YYYY-MM-DD HH:MM:SS` so columns never reflow. So the parts are
+ * pulled with `formatToParts` and reassembled by hand: locale-correct date
+ * arithmetic, layout-stable output, and no dependence on how a particular
+ * locale happens to order its separators.
+ */
+const UTC_CLOCK_FORMAT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC',
+  hourCycle: 'h23',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
+const UTC_DATE_FORMAT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+interface UtcParts {
+  year: string;
+  month: string;
+  day: string;
+  hour: string;
+  minute: string;
+  second: string;
+}
+
+function utcPartsOf(date: Date): UtcParts {
+  const parts: Partial<UtcParts> = {};
+  for (const part of UTC_DATE_FORMAT.formatToParts(date)) {
+    if (part.type === 'year' || part.type === 'month' || part.type === 'day') {
+      parts[part.type] = part.value;
+    }
+  }
+  for (const part of UTC_CLOCK_FORMAT.formatToParts(date)) {
+    if (part.type === 'hour' || part.type === 'minute' || part.type === 'second') {
+      parts[part.type] = part.value;
+    }
+  }
+  return {
+    year: parts.year ?? '0000',
+    month: parts.month ?? '00',
+    day: parts.day ?? '00',
+    hour: parts.hour ?? '00',
+    minute: parts.minute ?? '00',
+    second: parts.second ?? '00',
+  };
 }
 
 /** `HH:MM:SS` in UTC. */
@@ -251,12 +322,8 @@ export function formatUtcClock(value: Date | string | number, showSeconds: boole
   if (date === null) {
     return NULL_PLACEHOLDER;
   }
-  const hours = padNumber(date.getUTCHours());
-  const minutes = padNumber(date.getUTCMinutes());
-  if (!showSeconds) {
-    return `${hours}:${minutes}`;
-  }
-  return `${hours}:${minutes}:${padNumber(date.getUTCSeconds())}`;
+  const { hour, minute, second } = utcPartsOf(date);
+  return showSeconds ? `${hour}:${minute}:${second}` : `${hour}:${minute}`;
 }
 
 /** `YYYY-MM-DD` in UTC. */
@@ -265,7 +332,8 @@ export function formatUtcDate(value: Date | string | number): string {
   if (date === null) {
     return NULL_PLACEHOLDER;
   }
-  return `${date.getUTCFullYear()}-${padNumber(date.getUTCMonth() + 1)}-${padNumber(date.getUTCDate())}`;
+  const { year, month, day } = utcPartsOf(date);
+  return `${year}-${month}-${day}`;
 }
 
 /** `YYYY-MM-DD HH:MM:SSZ` in UTC — the full stamp used by the ledger and log feed. */
@@ -283,9 +351,8 @@ export function formatLogStamp(value: Date | string | number): string {
   if (date === null) {
     return NULL_PLACEHOLDER;
   }
-  const month = padNumber(date.getUTCMonth() + 1);
-  const day = padNumber(date.getUTCDate());
-  return `${month}-${day} ${formatUtcClock(date)}`;
+  const { month, day, hour, minute, second } = utcPartsOf(date);
+  return `${month}-${day} ${hour}:${minute}:${second}`;
 }
 
 /**

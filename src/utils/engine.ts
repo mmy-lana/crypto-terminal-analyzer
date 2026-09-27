@@ -23,6 +23,7 @@ import {
   TransactionRecord,
 } from '../types/terminal';
 import { generateCryptoId } from '../hooks/useTerminalStorage';
+import { formatCurrency, formatQuantity, formatSignedCurrency } from './formatters';
 
 /** Taker commission applied to market orders: 0.1%. */
 export const TAKER_FEE_RATE = 0.001;
@@ -246,7 +247,7 @@ function applyFill(
     }
 
     nextCash = schema.cashBalance + credit;
-    realisedForLog = ` (PnL: ${realised.toFixed(2)})`;
+    realisedForLog = realised === 0 ? '' : ` (PnL: ${formatSignedCurrency(realised)})`;
   }
 
   const filledOrder: OrderRecord = {
@@ -272,8 +273,8 @@ function applyFill(
 
   const message =
     source === 'LIMIT_MATCH'
-      ? `LIMIT ORDER FILLED: ${order.side} ${order.amount} ${order.symbol} @ ${fillPrice.toFixed(2)}`
-      : `EXECUTED ${order.side} ${order.amount} ${order.symbol} @ ${fillPrice.toFixed(2)} USD${realisedForLog}`;
+      ? `LIMIT ORDER FILLED: ${order.side} ${formatQuantity(order.amount)} ${order.symbol} @ ${formatCurrency(fillPrice)}`
+      : `EXECUTED ${order.side} ${formatQuantity(order.amount)} ${order.symbol} @ ${formatCurrency(fillPrice)}${realisedForLog}`;
 
   const log: SystemLogEntry = {
     id: generateCryptoId('LOG'),
@@ -405,7 +406,7 @@ export function placeLimitOrder(
     timestamp: createdAt,
     level: 'INFO',
     source: 'ORDER_ENTRY',
-    message: `LIMIT ORDER WORKING: ${side} ${amount} ${asset.symbol} @ ${limitPrice.toFixed(2)}`,
+    message: `LIMIT ORDER WORKING: ${side} ${formatQuantity(amount)} ${asset.symbol} @ ${formatCurrency(limitPrice)}`,
   };
 
   return {
@@ -448,7 +449,7 @@ export function cancelOrder(schema: StorageSchema, orderId: string): ExecutionRe
     timestamp: cancelledAt,
     level: 'WARN',
     source: 'ORDER_ENTRY',
-    message: `ORDER CANCELLED: ${target.side} ${target.amount} ${target.symbol} @ ${target.price.toFixed(2)}`,
+    message: `ORDER CANCELLED: ${target.side} ${formatQuantity(target.amount)} ${target.symbol} @ ${formatCurrency(target.price)}`,
   };
 
   return {

@@ -402,3 +402,72 @@ export function deriveLiveValuation(
     unrealizedPnLPercent,
   };
 }
+
+/**
+ * Pearson correlation between two equal-length return series.
+ *
+ * Returns 0 when the inputs are too short, misaligned, or when either series
+ * is constant — a constant series has zero variance, so the denominator is
+ * zero and the coefficient is undefined rather than infinite.
+ */
+export function calculatePearsonCorrelation(left: number[], right: number[]): number {
+  const length = Math.min(left.length, right.length);
+  if (length < 2) return 0;
+
+  let sumLeft = 0;
+  let sumRight = 0;
+  for (let i = 0; i < length; i++) {
+    sumLeft += left[i] ?? 0;
+    sumRight += right[i] ?? 0;
+  }
+  const meanLeft = sumLeft / length;
+  const meanRight = sumRight / length;
+
+  let covariance = 0;
+  let varianceLeft = 0;
+  let varianceRight = 0;
+  for (let i = 0; i < length; i++) {
+    const deltaLeft = (left[i] ?? 0) - meanLeft;
+    const deltaRight = (right[i] ?? 0) - meanRight;
+    covariance += deltaLeft * deltaRight;
+    varianceLeft += deltaLeft * deltaLeft;
+    varianceRight += deltaRight * deltaRight;
+  }
+
+  const denominator = Math.sqrt(varianceLeft * varianceRight);
+  if (!Number.isFinite(denominator) || denominator < VARIANCE_EPSILON) return 0;
+
+  const correlation = covariance / denominator;
+  if (!Number.isFinite(correlation)) return 0;
+  // Guard against float overshoot past the mathematical bound.
+  return Math.max(-1, Math.min(1, correlation));
+}
+
+/**
+ * Drawdown at every point of an equity curve, as a percentage below the
+ * running peak. Index 0 is always 0 because the first point is its own peak.
+ *
+ * The output is the same length as the input so it can be plotted against the
+ * equity curve. A non-finite sample is therefore carried forward as the
+ * previous drawdown rather than propagated: a `NaN` here would be drawn as a
+ * collapsed area chart and would break the peak recovery that follows it.
+ */
+export function calculateDrawdownSeries(equityCurve: number[]): number[] {
+  const series: number[] = [];
+  let peak = Number.NEGATIVE_INFINITY;
+  let lastDrawdown = 0;
+
+  for (const equity of equityCurve) {
+    if (!Number.isFinite(equity)) {
+      series.push(lastDrawdown);
+      continue;
+    }
+    if (equity > peak) {
+      peak = equity;
+    }
+    lastDrawdown = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+    series.push(lastDrawdown);
+  }
+
+  return series;
+}
