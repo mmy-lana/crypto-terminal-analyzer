@@ -14,6 +14,13 @@
  *  - `subscribeToMarketFeed` emits **synchronously on subscribe** and returns a
  *    disposer that clears the interval, so no panel ever renders a null-flash
  *    and no subscription can outlive its component.
+ *
+ * One property is deliberately *not* offered: this cadence is not
+ * configurable by media query. The 1s tick is data, not decoration — it is the
+ * price the operator is trading on, and stopping it would freeze the terminal on
+ * a stale number. `prefers-reduced-motion` therefore belongs to the decorative
+ * layer only (the ticker-tape marquee, the scanline, the execution flash),
+ * which is switched off in CSS; it must never gate this interval.
  */
 
 import { CryptoAsset, OrderBookEntry, OrderBookState } from '../types/terminal';
@@ -312,6 +319,10 @@ function deriveOpen24h(asset: CryptoAsset): number {
  * The first tick is emitted synchronously — a panel mounting against a live
  * market never renders an empty price — and every subsequent tick arrives on
  * `intervalMs`. The returned function must be used as the effect cleanup.
+ *
+ * `intervalMs` is a data cadence, so it is never scaled from a user preference:
+ * a reduced-motion request must not stretch or stop it, because the quotes are
+ * the product. Decorative motion is disabled in CSS instead.
  */
 export function subscribeToMarketFeed(
   symbols: string[],
