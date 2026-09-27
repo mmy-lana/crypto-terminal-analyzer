@@ -1,6 +1,7 @@
 import React, { ReactNode } from 'react';
 
 import { formatPercent } from '../../utils/formatters';
+import { InfoTip } from './InfoTip';
 
 export type MetricTone = 'neutral' | 'amber' | 'cyan' | 'emerald' | 'rose' | 'muted';
 
@@ -18,6 +19,8 @@ export interface MetricCellProps {
   tone?: MetricTone;
   /** Stacks label above value (default) or lays them out on one row. */
   layout?: 'stack' | 'row';
+  /** Optional plain-English explanation, surfaced through an `InfoTip`. */
+  info?: string;
   className?: string;
 }
 
@@ -47,6 +50,7 @@ const MetricCellImpl: React.FC<MetricCellProps> = ({
   deltaLabel,
   tone = 'neutral',
   layout = 'stack',
+  info,
   className = '',
 }) => {
   // Same formatter family as the rest of the terminal, so a delta here is
@@ -61,9 +65,16 @@ const MetricCellImpl: React.FC<MetricCellProps> = ({
         layout === 'row' ? 'flex-row items-center justify-between gap-2' : ''
       } ${className}`}
     >
-      <span className={`truncate text-[9px] font-bold uppercase leading-tight tracking-[0.14em] ${TONE_LABEL[tone]}`}>
-        {label}
-      </span>
+      {/* The label row carries the explanation trigger, so the term and the
+          thing that defines it stay adjacent. `truncate` is load-bearing: a long
+          term in a narrow two-column cell must yield to the trigger rather than
+          push the row wider. */}
+      <div className="flex items-center justify-between gap-1">
+        <span className={`min-w-0 truncate text-[9px] font-bold uppercase leading-tight tracking-[0.14em] ${TONE_LABEL[tone]}`}>
+          {label}
+        </span>
+        {info ? <InfoTip term={label} explanation={info} align="right" /> : null}
+      </div>
 
       <span className={`truncate text-sm font-bold leading-tight tabular-nums ${TONE_TEXT[tone]}`}>{value}</span>
 

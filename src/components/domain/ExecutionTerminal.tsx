@@ -6,6 +6,7 @@ import { MAKER_FEE_RATE, SLIPPAGE_FACTOR, TAKER_FEE_RATE, estimateOrder, getOpen
 import { describeExecutionError, type RemedyContext } from '../../utils/errorCopy';
 import { formatCurrency, formatPercent, formatQuantity } from '../../utils/formatters';
 import { ActionButton } from '../primitives/ActionButton';
+import { InfoTip } from '../primitives/InfoTip';
 import { OrderStatusBadge, OrderTypeBadge, SideBadge, TerminalBadge } from '../primitives/TerminalBadge';
 import { TerminalInput } from '../primitives/TerminalInput';
 
@@ -290,25 +291,40 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
       aria-label="Order ticket"
       noValidate
     >
-      <div className="flex shrink-0 border-b border-[#262c36]">
-        {(['MARKET', 'LIMIT'] as const).map((type) => (
-          <button
-            key={type}
-            type="button"
-            onClick={() => {
-              setOrderType(type);
-              setError(null);
-            }}
-            aria-pressed={orderType === type}
-            className={`min-h-[44px] flex-1 text-[11px] font-bold tracking-[0.1em] transition-colors ${
-              orderType === type
-                ? 'border-b-2 border-amber-500 bg-[#181c24] text-amber-500'
-                : 'text-neutral-500 hover:text-neutral-300'
-            }`}
-          >
-            {type}
-          </button>
-        ))}
+      {/* The type toggle is the single most consequential control in the
+          terminal — market costs a taker fee and pays slippage, limit earns the
+          cheaper maker fee but may never fill — so it carries its own
+          explanation rather than sending the operator to a glossary. */}
+      <div className="flex shrink-0 items-center justify-between border-b border-[#262c36] bg-[#0d1014] pr-1">
+        <div className="flex flex-1">
+          {(['MARKET', 'LIMIT'] as const).map((type) => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => {
+                setOrderType(type);
+                setError(null);
+              }}
+              aria-pressed={orderType === type}
+              className={`min-h-[44px] flex-1 text-[11px] font-bold tracking-[0.1em] transition-colors ${
+                orderType === type
+                  ? 'border-b-2 border-amber-500 bg-[#181c24] text-amber-500'
+                  : 'text-neutral-500 hover:text-neutral-300'
+              }`}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
+        <InfoTip
+          term={orderType === 'MARKET' ? 'Market order' : 'Limit order'}
+          explanation={
+            orderType === 'MARKET'
+              ? 'Fills immediately at the best available price. Pays 0.05% slippage plus a 0.10% taker fee.'
+              : 'Waits in the book until the market reaches your price. No slippage and a cheaper 0.05% maker fee, but it may never fill.'
+          }
+          align="right"
+        />
       </div>
 
       <div className="flex shrink-0 gap-1 p-2">

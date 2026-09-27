@@ -50,6 +50,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Total equity"
           value={isFlat ? NULL_PLACEHOLDER : formatCurrency(livePortfolio.totalEquity)}
           secondary={`Cash ${formatCurrency(schema.cashBalance)}`}
+          info="Total net worth of your account: uninvested cash plus the current market value of everything you hold."
           tone="amber"
           className="bg-[#12151a]"
         />
@@ -57,6 +58,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Unrealized P&L"
           value={formatSignedCurrency(livePortfolio.unrealizedPnL)}
           secondary={isFlat ? 'No open positions' : formatPercent(livePortfolio.unrealizedPnLPercent, 2)}
+          info="Paper profit or loss on positions you still hold, valued at live prices. It is only locked in once you sell."
           tone={livePortfolio.unrealizedPnL >= 0 ? 'emerald' : 'rose'}
           className="bg-[#12151a]"
         />
@@ -64,6 +66,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Realized P&L"
           value={hasHistory ? formatSignedCurrency(reconstruction.realizedPnL) : NULL_PLACEHOLDER}
           secondary={`${reconstruction.tradeCount} closed round trip${reconstruction.tradeCount === 1 ? '' : 's'}`}
+          info="Actual profit or loss locked in from trades you have fully closed, after deducting commissions."
           tone={reconstruction.realizedPnL >= 0 ? 'emerald' : 'rose'}
           className="bg-[#12151a]"
         />
@@ -71,6 +74,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Total P&L"
           value={formatSignedCurrency(riskMetrics.totalPnL)}
           secondary={`vs ${formatCurrency(schema.initialDeposit)} deposit`}
+          info={`Realized plus unrealized, measured against the ${formatCurrency(schema.initialDeposit)} you started with.`}
           tone={totalPnlIsPositive ? 'emerald' : 'rose'}
           className="bg-[#12151a]"
         />
@@ -103,6 +107,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Sharpe"
           value={hasHistory && Number.isFinite(riskMetrics.sharpeRatio) ? formatRatio(riskMetrics.sharpeRatio, 2) : NULL_PLACEHOLDER}
           secondary="Daily, rf 0.01%"
+          info="Return earned per unit of volatility. Above 1.0 is generally considered good; higher means more return for the swings you took."
           tone="cyan"
           className="bg-[#12151a]"
         />
@@ -110,6 +115,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Max drawdown"
           value={hasHistory ? formatPercent(-riskMetrics.maxDrawdownPercent, 2) : NULL_PLACEHOLDER}
           secondary={drawdown === null ? 'Needs ≥ 2 settlements' : `Peak to trough`}
+          info="The worst peak-to-trough fall your account equity has made. Describes the deepest hole you would have had to sit through."
           tone={riskMetrics.maxDrawdownPercent > 10 ? 'rose' : 'neutral'}
           className="bg-[#12151a]"
         />
@@ -117,6 +123,7 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
           label="Win rate"
           value={hasHistory ? formatPercent(riskMetrics.winRatePercent, 1) : NULL_PLACEHOLDER}
           secondary={`${reconstruction.winCount}W / ${reconstruction.lossCount}L`}
+          info="Share of completed round trips that finished in profit. Counts how often you won, not how much."
           className="bg-[#12151a]"
         />
         <MetricCell
@@ -129,18 +136,21 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
               : NULL_PLACEHOLDER
           }
           secondary="Gross win / gross loss"
+          info="Gross profits divided by gross losses. Above 1.5 is generally read as a solid edge; below 1.0 means losses outweigh wins."
           className="bg-[#12151a]"
         />
         <MetricCell
           label="Daily volatility"
           value={hasHistory ? formatPercent(riskMetrics.volatilityDaily, 3) : NULL_PLACEHOLDER}
           secondary="Std dev of returns"
+          info="Standard deviation of daily returns. High volatility means wide swings and more uncertainty about any single day."
           className="bg-[#12151a]"
         />
         <MetricCell
           label="Fees paid"
           value={hasHistory ? formatCurrency(reconstruction.totalFees, 2) : NULL_PLACEHOLDER}
           secondary={`${riskMetrics.totalTradesCount} execution${riskMetrics.totalTradesCount === 1 ? '' : 's'}`}
+          info="Total mock commissions paid across every fill. This demo charges 0.10% on market fills and 0.05% on limit fills."
           tone="amber"
           className="bg-[#12151a]"
         />

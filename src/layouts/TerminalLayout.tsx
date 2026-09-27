@@ -11,6 +11,7 @@ import { OrderBookContainer } from '../components/domain/OrderBookContainer';
 import { PortfolioSummaryPanel } from '../components/domain/PortfolioSummaryPanel';
 import { TransactionLedger } from '../components/domain/TransactionLedger';
 import { HeaderBar } from '../components/compound/HeaderBar';
+import { BeginnerGuideModal } from '../components/compound/BeginnerGuideModal';
 import { SparklineChart } from '../components/compound/SparklineChart';
 import { SystemLogFeed } from '../components/compound/SystemLogFeed';
 import { TickerTape } from '../components/compound/TickerTape';
@@ -227,6 +228,10 @@ export const TerminalLayout: React.FC<TerminalLayoutProps> = ({
   } = useTerminal();
   const isMobile = useIsMobile();
   const isDesktop = useIsDesktop();
+  // The CRT overlay is opt-in: scanlines and a vignette are atmosphere, and they
+  // cost real legibility on the dense numeric panels this terminal is made of.
+  const [retroEffect, setRetroEffect] = React.useState(false);
+  const [guideOpen, setGuideOpen] = React.useState(false);
 
   const openPositionCount = useMemo(
     () => Object.values(livePortfolio.holdings).filter((holding) => holding.amount > 0).length,
@@ -319,6 +324,9 @@ export const TerminalLayout: React.FC<TerminalLayoutProps> = ({
         activeTab={activeTab}
         onTabShortcut={onTabChange}
         onOpenCommand={onOpenCommand}
+        onOpenGuide={() => setGuideOpen(true)}
+        retroEffect={retroEffect}
+        onToggleRetro={() => setRetroEffect((prev) => !prev)}
         onReset={() => {
           if (window.confirm('Wipe the paper ledger and reseed the starting allocation?')) {
             resetPortfolio();
@@ -341,8 +349,14 @@ export const TerminalLayout: React.FC<TerminalLayoutProps> = ({
     <div
       className={`relative flex min-h-dvh flex-col bg-[#0a0b0d] text-neutral-100 [padding-top:env(safe-area-inset-top,0px)] ${className}`}
     >
-      <div className="scanline-overlay" aria-hidden="true" />
-      <div className="vignette-overlay" aria-hidden="true" />
+      {retroEffect ? (
+        <>
+          <div className="scanline-overlay" aria-hidden="true" />
+          <div className="vignette-overlay" aria-hidden="true" />
+        </>
+      ) : null}
+
+      <BeginnerGuideModal open={guideOpen} onClose={() => setGuideOpen(false)} />
 
       <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         {chrome}

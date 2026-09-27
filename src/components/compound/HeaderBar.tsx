@@ -17,6 +17,12 @@ export interface HeaderBarProps {
   onTabShortcut?: (tab: TerminalTab) => void;
   /** Opens the command palette. */
   onOpenCommand?: () => void;
+  /** Opens the beginner trading guide. */
+  onOpenGuide?: () => void;
+  /** Whether the retro CRT overlay is currently on. */
+  retroEffect?: boolean;
+  /** Toggles the retro CRT overlay. */
+  onToggleRetro?: () => void;
   /** Restarts the paper account. */
   onReset?: () => void;
 }
@@ -42,6 +48,9 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   activeTab,
   onTabShortcut,
   onOpenCommand,
+  onOpenGuide,
+  retroEffect = false,
+  onToggleRetro,
   onReset,
 }) => {
   const [now, setNow] = useState<string>(() => new Date().toISOString());
@@ -138,6 +147,37 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </nav>
 
         <div className="flex shrink-0 items-center gap-1.5">
+          {onOpenGuide ? (
+            <button
+              type="button"
+              onClick={onOpenGuide}
+              aria-label="Beginner trading guide"
+              className="flex min-h-[44px] min-w-[44px] items-center gap-1.5 border border-cyan-500/40 bg-cyan-500/10 px-2 text-[10px] font-bold uppercase tracking-[0.1em] text-cyan-400 transition-colors hover:bg-cyan-500/20"
+            >
+              <span aria-hidden="true" className="font-bold text-cyan-300">
+                ?
+              </span>
+              <span className="hidden sm:inline">GUIDE</span>
+            </button>
+          ) : null}
+
+          {/* The label states the *current* state, not the action, so the control
+              is readable at a glance without pressing it. */}
+          {onToggleRetro ? (
+            <button
+              type="button"
+              onClick={onToggleRetro}
+              aria-pressed={retroEffect}
+              aria-label={`Retro CRT scanlines, currently ${retroEffect ? 'on' : 'off'}`}
+              className={`flex min-h-[44px] min-w-[44px] items-center justify-center gap-1 border border-[#262c36] px-2 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors ${
+                retroEffect ? 'bg-amber-500/15 text-amber-500' : 'text-neutral-500 hover:text-neutral-300'
+              }`}
+            >
+              <span className="hidden sm:inline">{retroEffect ? 'CRT ON' : 'CRT OFF'}</span>
+              <span className="sm:hidden">{retroEffect ? 'CRT' : 'CLEAN'}</span>
+            </button>
+          ) : null}
+
           {onOpenCommand ? (
             <button
               type="button"
