@@ -15,8 +15,13 @@ export interface TransactionLedgerProps {
 type SideFilter = 'ALL' | OrderSide;
 type Order_ = 'newest' | 'oldest';
 
+// One track per rendered cell, in the same order as the header and the row
+// below: Time, Side, Symbol, Amount, Price, Notional, Fee. A template with
+// fewer tracks than cells does not truncate — the surplus cell is placed in an
+// implicit auto-sized track, so the last column silently loses its width and the
+// body drifts out of alignment under the headers.
 const LEDGER_COLUMNS =
-  'minmax(80px, 1fr) minmax(70px, 1fr) minmax(80px, 1fr) minmax(70px, 1fr) minmax(60px, 1fr) minmax(90px, 1fr)';
+  'minmax(80px, 1.1fr) minmax(60px, 0.8fr) minmax(70px, 1fr) minmax(70px, 1fr) minmax(75px, 1fr) minmax(75px, 1fr) minmax(60px, 0.8fr)';
 
 const SIDE_FILTERS: SideFilter[] = ['ALL', 'BUY', 'SELL'];
 

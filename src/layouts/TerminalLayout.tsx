@@ -26,7 +26,16 @@ export interface TerminalLayoutProps {
   className?: string;
 }
 
-const WATCHLIST_COLUMNS = 'minmax(80px, 1.2fr) minmax(84px, 1fr) minmax(70px, 0.9fr) minmax(60px, 0.7fr)';
+/**
+ * One track per cell, and the cell count depends on the volume column: with it,
+ * the row is Symbol / Last / 24h / Vol / MCap. A single 4-track template left
+ * the volume cell in an implicit auto-sized track on every desktop row, so the
+ * MCap header and the MCap figures no longer lined up.
+ */
+const buildWatchlistColumns = (showVolume: boolean): string =>
+  showVolume
+    ? 'minmax(80px, 1.2fr) minmax(84px, 1fr) minmax(70px, 0.9fr) minmax(64px, 0.8fr) minmax(60px, 0.7fr)'
+    : 'minmax(80px, 1.2fr) minmax(84px, 1fr) minmax(70px, 0.9fr) minmax(60px, 0.7fr)';
 
 /**
  * Market watch panel.
@@ -37,6 +46,7 @@ const WATCHLIST_COLUMNS = 'minmax(80px, 1.2fr) minmax(84px, 1fr) minmax(70px, 0.
  */
 const WatchlistPanel: React.FC<{ showVolume: boolean }> = ({ showVolume }) => {
   const { assets, schema, selectedSymbol, setSelectedSymbol } = useTerminal();
+  const columns = useMemo(() => buildWatchlistColumns(showVolume), [showVolume]);
 
   const rows = useMemo(() => {
     const seen = new Set<string>();
@@ -64,7 +74,7 @@ const WatchlistPanel: React.FC<{ showVolume: boolean }> = ({ showVolume }) => {
       bodyClassName="min-h-0 flex-1 overflow-y-auto"
     >
       <TabularTable label="Watchlist" className="min-h-0 flex-1">
-        <TabularGrid columns={WATCHLIST_COLUMNS}>
+        <TabularGrid columns={columns}>
           <TabularCell header>Symbol</TabularCell>
           <TabularCell header align="right">
             Last
@@ -82,7 +92,7 @@ const WatchlistPanel: React.FC<{ showVolume: boolean }> = ({ showVolume }) => {
           const isSelected = asset.symbol === selectedSymbol;
           const isUp = asset.change24h >= 0;
           return (
-            <TabularGrid key={asset.id} role="row" columns={WATCHLIST_COLUMNS}>
+            <TabularGrid key={asset.id} role="row" columns={columns}>
               <TabularCell striped={index % 2 === 1} active={isSelected}>
                 <button
                   type="button"

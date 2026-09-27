@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 
-import { OrderBookState } from '../../types/terminal';
+import { OrderBookEntry, OrderBookState } from '../../types/terminal';
 import { CanvasRenderCallback, resizeHiDPICanvas, setupHiDPICanvas } from '../../utils/canvas';
 import { formatCurrency, formatQuantity } from '../../utils/formatters';
 
@@ -70,6 +70,34 @@ function describeDepth(book: OrderBookState, midPrice?: number): string {
 }
 
 /**
+ * Everything the painter reads, and therefore everything that has to change
+ * before a repaint is worth skipping.
+ *
+ * The obvious five-number fingerprint — mid, top bid, top ask and the deepest
+ * cumulative total on each side — is not enough. The polygon is drawn from
+ * *every* level and its vertical scale comes from the largest total in the
+ * book, so two books can agree on all five and still differ in the middle of
+ * the ladder or in where the peak sits. Skipping that repaint leaves a stale
+ * curve on screen, which is worse than the redraw it was trying to avoid.
+ */
+interface DepthFrame {
+  mid: number;
+  bids: OrderBookEntry[];
+  asks: OrderBookEntry[];
+}
+
+function ladderIsUnchanged(before: OrderBookEntry[], after: OrderBookEntry[]): boolean {
+  if (before.length !== after.length) return false;
+  for (let index = 0; index < before.length; index += 1) {
+    const previous = before[index];
+    const current = after[index];
+    if (previous === undefined || current === undefined) return false;
+    if (previous.price !== current.price || previous.total !== current.total) return false;
+  }
+  return true;
+}
+
+/**
  * Canvas cumulative-depth curve.
  *
  * All bitmap lifecycle work is delegated to `utils/canvas`: the observer and
@@ -89,6 +117,7 @@ export const DepthVisualizer: React.FC<DepthVisualizerProps> = ({
   const renderRef = useRef<CanvasRenderCallback | null>(null);
   const bookRef = useRef<OrderBookState>(book);
   const midPriceRef = useRef<number | undefined>(midPrice);
+  const lastDrawnRef = useRef<DepthFrame | null>(null);
 
   bookRef.current = book;
   midPriceRef.current = midPrice;
@@ -192,7 +221,26 @@ export const DepthVisualizer: React.FC<DepthVisualizerProps> = ({
     const canvas = canvasRef.current;
     const render = renderRef.current;
     if (!container || !canvas || !render) return;
-    resizeHiDPICanvas(canvas, container, render);
+
+    const next: DepthFrame = { mid: midPrice ?? book.lastPrice, bids: book.bids, asks: book.asks };
+    const previous = lastDrawnRef.current;
+    if (
+      previous !== null &&
+      previous.mid === next.mid &&
+      ladderIsUnchanged(previous.bids, next.bids) &&
+      ladderIsUnchanged(previous.asks, next.asks)
+    ) {
+      return;
+    }
+
+    // Record the frame only once it is genuinely on the canvas.
+    // `resizeHiDPICanvas` returns false without drawing when the container has
+    // no box — which is what a hidden panel or a pre-layout frame looks like —
+    // and marking that frame as drawn would suppress the first real repaint and
+    // leave a blank chart for the rest of the mount.
+    if (resizeHiDPICanvas(canvas, container, render)) {
+      lastDrawnRef.current = next;
+    }
   }, [book, midPrice]);
 
   return (

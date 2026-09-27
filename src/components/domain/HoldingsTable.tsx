@@ -163,7 +163,26 @@ const HoldingRow: React.FC<HoldingRowProps> = ({
 
   return (
     <TabularGrid role="row" columns={buildColumns(showSparkline)}>
-      <TabularCell striped={striped} active={isSelected} rowHeader>
+      <TabularCell
+        striped={striped}
+        active={isSelected}
+        rowHeader
+        // Freeze pane: on a phone the position columns scroll sideways under
+        // this one, so the symbol never leaves the screen.
+        //
+        // A sticky cell has to carry an opaque background of its own or the rows
+        // show straight through it — and it has to be the background this row
+        // would have had anyway. Pinning one colour here would flatten the
+        // zebra stripe and the selected-row highlight, leaving the symbol cell
+        // disagreeing with the rest of its own row. `TabularCell` already
+        // paints those two states, so this only supplies the plain case, where
+        // its siblings are transparent and the panel colour shows through.
+        // z-20 keeps it above the sticky header row where the two cross at the
+        // top-left corner.
+        className={`sticky left-0 z-20 shadow-[1px_0_0_0_#262c36] ${
+          isSelected || striped ? '' : 'bg-[#12151a]'
+        }`}
+      >
         <span
           className={`block min-h-[44px] min-w-0 truncate py-1 text-[11px] font-bold leading-[1.6] ${
             isSelected ? 'text-cyan-500' : 'text-neutral-100'
