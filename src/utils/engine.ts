@@ -1,17 +1,116 @@
+/**
+ * Paper matching & execution engine.
+ *
+ * Every mutation is expressed as `(schema) => ExecutionResult`: the engine
+ * never touches React state or storage, it returns the next committed ledger
+ * state. Callers must funnel that through the functional `updateSchema(prev => …)`
+ * updater so concurrent market ticks and order submissions can never observe a
+ * stale snapshot.
+ *
+ * Fee model — takers pay 0.1%, resting limit orders earn 0.05% maker rebate.
+ * Market orders additionally cross the synthetic spread, modelled as a flat
+ * 0.05% adverse slippage on both sides.
+ */
+
 import {
   CryptoAsset,
   OrderRecord,
+  OrderSide,
+  OrderType,
   PositionHolding,
   StorageSchema,
-  TransactionRecord,
   SystemLogEntry,
+  TransactionRecord,
 } from '../types/terminal';
 import { generateCryptoId } from '../hooks/useTerminalStorage';
 
-const TAKER_FEE_RATE = 0.001;
-const MAKER_FEE_RATE = 0.0005;
-const SLIPPAGE_FACTOR = 0.0005;
+/** Taker commission applied to market orders: 0.1%. */
+export const TAKER_FEE_RATE = 0.001;
+/** Maker commission applied to resting limit fills: 0.05%. */
+export const MAKER_FEE_RATE = 0.0005;
+/** Synthetic slippage paid when a market order crosses the spread: 0.05%. */
+export const SLIPPAGE_FACTOR = 0.0005;
+/** Position size at or below which a holding is considered fully closed. */
+export const DUST_THRESHOLD = 0.000001;
 
+/** Machine-readable rejection reasons surfaced by the order ticket. */
+export type ExecutionErrorCode =
+  | 'INVALID_SYMBOL'
+  | 'INVALID_AMOUNT'
+  | 'INVALID_PRICE'
+  | 'INSUFFICIENT_FUNDS'
+  | 'INSUFFICIENT_ASSET_BALANCE'
+  | 'ORDER_NOT_FOUND'
+  | 'ORDER_NOT_CANCELABLE';
+
+/** Result of any ledger mutation. A failed result returns the input schema untouched. */
+export interface ExecutionResult {
+  success: boolean;
+  error?: ExecutionErrorCode;
+  updatedSchema: StorageSchema;
+}
+
+/** Pre-trade cost preview used by the order ticket and the command palette. */
+export interface OrderEstimate {
+  executionPrice: number;
+  totalValue: number;
+  fee: number;
+  /** Signed change to the cash balance once this order settles (negative = debit). */
+  cashDelta: number;
+}
+
+/** Commission rate for an order type. */
+export function feeRateForOrderType(type: OrderType): number {
+  return type === 'LIMIT' ? MAKER_FEE_RATE : TAKER_FEE_RATE;
+}
+
+/** Commission charged on a notional amount. */
+export function calculateFee(notional: number, type: OrderType): number {
+  if (!Number.isFinite(notional) || notional <= 0) {
+    return 0;
+  }
+  return notional * feeRateForOrderType(type);
+}
+
+/**
+ * Price a market order executes at: buys lift the offer, sells hit the bid.
+ * Limit orders rest at their limit price and never slip.
+ */
+export function applySlippage(price: number, side: OrderSide): number {
+  if (!Number.isFinite(price) || price <= 0) {
+    return 0;
+  }
+  const slipped = side === 'BUY' ? price * (1 + SLIPPAGE_FACTOR) : price * (1 - SLIPPAGE_FACTOR);
+  return Number(Math.max(slipped, 0).toFixed(8));
+}
+
+/** Full cost preview for a prospective order, including commission and cash impact. */
+export function estimateOrder(
+  price: number,
+  amount: number,
+  type: OrderType,
+  side: OrderSide
+): OrderEstimate {
+  const executionPrice = type === 'MARKET' ? applySlippage(price, side) : price;
+  const totalValue = executionPrice * amount;
+  const fee = calculateFee(totalValue, type);
+  const cashDelta = side === 'BUY' ? -(totalValue + fee) : totalValue - fee;
+  return { executionPrice, totalValue, fee, cashDelta };
+}
+
+function isPositiveFinite(value: number | undefined | null): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function rejection(error: ExecutionErrorCode, schema: StorageSchema): ExecutionResult {
+  return { success: false, error, updatedSchema: schema };
+}
+
+/** A zeroed position row, ready to be filled by the first execution. */
 export function createEmptyHolding(symbol: string, name: string): PositionHolding {
   return {
     symbol,
@@ -23,10 +122,15 @@ export function createEmptyHolding(symbol: string, name: string): PositionHoldin
     unrealizedPnL: 0,
     unrealizedPnLPercent: 0,
     allocationPercent: 0,
-    lastUpdated: new Date().toISOString(),
+    lastUpdated: nowIso(),
   };
 }
 
+/**
+ * Recomputes every derived field of a holding after its quantity or cost basis
+ * changed. `recalculateHolding` commits ledger truth during trade/limit fills;
+ * continuous mark-to-market re-pricing on ticks lives in `deriveLiveValuation`.
+ */
 export function recalculateHolding(
   holding: PositionHolding,
   newAmount: number,
@@ -46,10 +150,11 @@ export function recalculateHolding(
     currentValue,
     unrealizedPnL,
     unrealizedPnLPercent,
-    lastUpdated: new Date().toISOString(),
+    lastUpdated: nowIso(),
   };
 }
 
+/** Recomputes the portfolio weight of every holding against current equity. */
 export function applyAllocations(schema: StorageSchema): StorageSchema {
   const holdingsValue = Object.values(schema.holdings).reduce((acc, h) => acc + h.currentValue, 0);
   const totalEquity = schema.cashBalance + holdingsValue;
@@ -67,168 +172,314 @@ export function applyAllocations(schema: StorageSchema): StorageSchema {
   return { ...schema, holdings: updatedHoldings };
 }
 
-export function executeMarketOrder(
+/** Internal fill result: the next ledger plus the order, transaction and log rows it produced. */
+interface FillOutcome {
+  schema: StorageSchema;
+  order: OrderRecord;
+  transaction: TransactionRecord;
+  log: SystemLogEntry;
+}
+
+/**
+ * Applies one fill to a ledger snapshot.
+ *
+ * `fillPrice` is what the order actually paid (limit price, or slipped market
+ * price); `markPrice` is the market at the instant of the fill and is what the
+ * resulting position is marked against. Returns `null` — leaving the ledger
+ * untouched — when the account cannot settle the trade.
+ */
+function applyFill(
   schema: StorageSchema,
-  asset: CryptoAsset,
-  side: 'BUY' | 'SELL',
-  amount: number
-): { success: boolean; error?: string; updatedSchema: StorageSchema } {
-  if (amount <= 0) {
-    return { success: false, error: 'INVALID_AMOUNT', updatedSchema: schema };
-  }
+  order: OrderRecord,
+  fillPrice: number,
+  markPrice: number,
+  feeRate: number,
+  source: string
+): FillOutcome | null {
+  const executedAt = nowIso();
+  const totalValue = fillPrice * order.amount;
+  const fee = totalValue * feeRate;
 
-  const executionPrice =
-    side === 'BUY'
-      ? asset.currentPrice * (1 + SLIPPAGE_FACTOR)
-      : asset.currentPrice * (1 - SLIPPAGE_FACTOR);
+  let nextCash: number;
+  let nextHoldings: Record<string, PositionHolding>;
+  let realisedForLog = '';
 
-  const totalValue = executionPrice * amount;
-  const fee = totalValue * TAKER_FEE_RATE;
-
-  if (side === 'BUY') {
-    const totalRequired = totalValue + fee;
-    if (schema.cashBalance < totalRequired) {
-      return { success: false, error: 'INSUFFICIENT_FUNDS', updatedSchema: schema };
+  if (order.side === 'BUY') {
+    const debit = totalValue + fee;
+    if (schema.cashBalance < debit) {
+      return null;
     }
 
-    const currentHolding = schema.holdings[asset.symbol] || createEmptyHolding(asset.symbol, asset.name);
-    const updatedHolding = recalculateHolding(
-      currentHolding,
-      currentHolding.amount + amount,
-      currentHolding.totalCost + totalValue,
-      asset.currentPrice
-    );
-
-    const orderId = generateCryptoId('ORD');
-    const newOrder: OrderRecord = {
-      id: orderId,
-      clientOrderId: generateCryptoId('CLI'),
-      symbol: asset.symbol,
-      side: 'BUY',
-      type: 'MARKET',
-      price: executionPrice,
-      amount,
-      filledAmount: amount,
-      totalValue,
-      status: 'FILLED',
-      fee,
-      createdAt: new Date().toISOString(),
-      executedAt: new Date().toISOString(),
+    const current = schema.holdings[order.symbol] ?? createEmptyHolding(order.symbol, order.symbol);
+    nextHoldings = {
+      ...schema.holdings,
+      [order.symbol]: recalculateHolding(
+        current,
+        current.amount + order.amount,
+        current.totalCost + totalValue,
+        markPrice
+      ),
     };
-
-    const newTx: TransactionRecord = {
-      id: generateCryptoId('TX'),
-      orderId,
-      symbol: asset.symbol,
-      side: 'BUY',
-      executionPrice,
-      amount,
-      totalValue,
-      fee,
-      timestamp: new Date().toISOString(),
-    };
-
-    const draftSchema: StorageSchema = {
-      ...schema,
-      cashBalance: schema.cashBalance - totalRequired,
-      holdings: { ...schema.holdings, [asset.symbol]: updatedHolding },
-      orders: [newOrder, ...schema.orders],
-      transactions: [newTx, ...schema.transactions],
-      logs: [
-        {
-          id: generateCryptoId('LOG'),
-          timestamp: new Date().toISOString(),
-          level: 'EXEC',
-          source: 'MATCH_ENGINE',
-          message: `EXECUTED BUY ${amount} ${asset.symbol} @ ${executionPrice.toFixed(2)} USD`,
-        },
-        ...schema.logs,
-      ],
-    };
-
-    return { success: true, updatedSchema: applyAllocations(draftSchema) };
+    nextCash = schema.cashBalance - debit;
   } else {
-    const currentHolding = schema.holdings[asset.symbol];
-    if (!currentHolding || currentHolding.amount < amount) {
-      return { success: false, error: 'INSUFFICIENT_ASSET_BALANCE', updatedSchema: schema };
+    const current = schema.holdings[order.symbol];
+    if (current === undefined || current.amount < order.amount) {
+      return null;
     }
 
-    const netReceived = totalValue - fee;
-    const remainingAmount = currentHolding.amount - amount;
-    const costBasisSold = currentHolding.averageEntryPrice * amount;
-    const realizedPnL = totalValue - costBasisSold;
+    const credit = totalValue - fee;
+    const costBasisSold = current.averageEntryPrice * order.amount;
+    const realised = totalValue - costBasisSold;
+    const remainingAmount = current.amount - order.amount;
 
-    const updatedHoldings = { ...schema.holdings };
-    if (remainingAmount <= 0.000001) {
-      delete updatedHoldings[asset.symbol];
+    nextHoldings = { ...schema.holdings };
+    if (remainingAmount <= DUST_THRESHOLD) {
+      delete nextHoldings[order.symbol];
     } else {
-      const remainingCost = Math.max(0, currentHolding.totalCost - costBasisSold);
-      updatedHoldings[asset.symbol] = recalculateHolding(
-        currentHolding,
+      const remainingCost = Math.max(0, current.totalCost - costBasisSold);
+      nextHoldings[order.symbol] = recalculateHolding(
+        current,
         remainingAmount,
         remainingCost,
-        asset.currentPrice
+        markPrice
       );
     }
 
-    const orderId = generateCryptoId('ORD');
-    const newOrder: OrderRecord = {
-      id: orderId,
-      clientOrderId: generateCryptoId('CLI'),
-      symbol: asset.symbol,
-      side: 'SELL',
-      type: 'MARKET',
-      price: executionPrice,
-      amount,
-      filledAmount: amount,
-      totalValue,
-      status: 'FILLED',
-      fee,
-      createdAt: new Date().toISOString(),
-      executedAt: new Date().toISOString(),
-    };
-
-    const newTx: TransactionRecord = {
-      id: generateCryptoId('TX'),
-      orderId,
-      symbol: asset.symbol,
-      side: 'SELL',
-      executionPrice,
-      amount,
-      totalValue,
-      fee,
-      timestamp: new Date().toISOString(),
-    };
-
-    const draftSchema: StorageSchema = {
-      ...schema,
-      cashBalance: schema.cashBalance + netReceived,
-      holdings: updatedHoldings,
-      orders: [newOrder, ...schema.orders],
-      transactions: [newTx, ...schema.transactions],
-      logs: [
-        {
-          id: generateCryptoId('LOG'),
-          timestamp: new Date().toISOString(),
-          level: 'EXEC',
-          source: 'MATCH_ENGINE',
-          message: `EXECUTED SELL ${amount} ${asset.symbol} @ ${executionPrice.toFixed(2)} USD (PnL: ${realizedPnL.toFixed(2)})`,
-        },
-        ...schema.logs,
-      ],
-    };
-
-    return { success: true, updatedSchema: applyAllocations(draftSchema) };
+    nextCash = schema.cashBalance + credit;
+    realisedForLog = ` (PnL: ${realised.toFixed(2)})`;
   }
+
+  const filledOrder: OrderRecord = {
+    ...order,
+    filledAmount: order.amount,
+    totalValue,
+    status: 'FILLED',
+    fee,
+    executedAt,
+  };
+
+  const transaction: TransactionRecord = {
+    id: generateCryptoId('TX'),
+    orderId: order.id,
+    symbol: order.symbol,
+    side: order.side,
+    executionPrice: fillPrice,
+    amount: order.amount,
+    totalValue,
+    fee,
+    timestamp: executedAt,
+  };
+
+  const message =
+    source === 'LIMIT_MATCH'
+      ? `LIMIT ORDER FILLED: ${order.side} ${order.amount} ${order.symbol} @ ${fillPrice.toFixed(2)}`
+      : `EXECUTED ${order.side} ${order.amount} ${order.symbol} @ ${fillPrice.toFixed(2)} USD${realisedForLog}`;
+
+  const log: SystemLogEntry = {
+    id: generateCryptoId('LOG'),
+    timestamp: executedAt,
+    level: 'EXEC',
+    source,
+    message,
+  };
+
+  return {
+    schema: {
+      ...schema,
+      cashBalance: nextCash,
+      holdings: nextHoldings,
+    },
+    order: filledOrder,
+    transaction,
+    log,
+  };
 }
 
+/**
+ * Submits a market order: it crosses the spread immediately and settles in full.
+ *
+ * Rejects with `INSUFFICIENT_FUNDS` when the debit exceeds free cash, and with
+ * `INSUFFICIENT_ASSET_BALANCE` when selling more than the account holds.
+ */
+export function executeMarketOrder(
+  schema: StorageSchema,
+  asset: CryptoAsset,
+  side: OrderSide,
+  amount: number
+): ExecutionResult {
+  if (typeof asset.symbol !== 'string' || asset.symbol.length === 0) {
+    return rejection('INVALID_SYMBOL', schema);
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return rejection('INVALID_AMOUNT', schema);
+  }
+  if (!isPositiveFinite(asset.currentPrice)) {
+    return rejection('INVALID_PRICE', schema);
+  }
+
+  const executionPrice = applySlippage(asset.currentPrice, side);
+  const createdAt = nowIso();
+  const pendingOrder: OrderRecord = {
+    id: generateCryptoId('ORD'),
+    clientOrderId: generateCryptoId('CLI'),
+    symbol: asset.symbol,
+    side,
+    type: 'MARKET',
+    price: executionPrice,
+    amount,
+    filledAmount: 0,
+    totalValue: 0,
+    status: 'PENDING',
+    fee: 0,
+    createdAt,
+  };
+
+  const outcome = applyFill(schema, pendingOrder, executionPrice, asset.currentPrice, TAKER_FEE_RATE, 'MATCH_ENGINE');
+  if (outcome === null) {
+    return rejection(side === 'BUY' ? 'INSUFFICIENT_FUNDS' : 'INSUFFICIENT_ASSET_BALANCE', schema);
+  }
+
+  const settled: StorageSchema = {
+    ...outcome.schema,
+    orders: [outcome.order, ...schema.orders],
+    transactions: [outcome.transaction, ...schema.transactions],
+    logs: [outcome.log, ...schema.logs],
+  };
+
+  return { success: true, updatedSchema: applyAllocations(settled) };
+}
+
+/**
+ * Rests a limit order on the book.
+ *
+ * The order is validated against the account at submission time, but nothing
+ * is reserved: a buy that was affordable when it was placed can still fail to
+ * settle if the balance is spent before the limit price trades.
+ */
+export function placeLimitOrder(
+  schema: StorageSchema,
+  asset: CryptoAsset,
+  side: OrderSide,
+  amount: number,
+  limitPrice: number
+): ExecutionResult {
+  if (typeof asset.symbol !== 'string' || asset.symbol.length === 0) {
+    return rejection('INVALID_SYMBOL', schema);
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return rejection('INVALID_AMOUNT', schema);
+  }
+  if (!isPositiveFinite(limitPrice)) {
+    return rejection('INVALID_PRICE', schema);
+  }
+
+  const estimate = estimateOrder(limitPrice, amount, 'LIMIT', side);
+  if (side === 'BUY' && schema.cashBalance < Math.abs(estimate.cashDelta)) {
+    return rejection('INSUFFICIENT_FUNDS', schema);
+  }
+  if (side === 'SELL') {
+    const holding = schema.holdings[asset.symbol];
+    if (holding === undefined || holding.amount < amount) {
+      return rejection('INSUFFICIENT_ASSET_BALANCE', schema);
+    }
+  }
+
+  const createdAt = nowIso();
+  const order: OrderRecord = {
+    id: generateCryptoId('ORD'),
+    clientOrderId: generateCryptoId('CLI'),
+    symbol: asset.symbol,
+    side,
+    type: 'LIMIT',
+    price: limitPrice,
+    amount,
+    filledAmount: 0,
+    totalValue: limitPrice * amount,
+    status: 'PENDING',
+    fee: 0,
+    createdAt,
+  };
+
+  const log: SystemLogEntry = {
+    id: generateCryptoId('LOG'),
+    timestamp: createdAt,
+    level: 'INFO',
+    source: 'ORDER_ENTRY',
+    message: `LIMIT ORDER WORKING: ${side} ${amount} ${asset.symbol} @ ${limitPrice.toFixed(2)}`,
+  };
+
+  return {
+    success: true,
+    updatedSchema: {
+      ...schema,
+      orders: [order, ...schema.orders],
+      logs: [log, ...schema.logs],
+    },
+  };
+}
+
+/** Working (pending) limit orders, newest first. */
+export function getOpenOrders(schema: StorageSchema): OrderRecord[] {
+  return schema.orders.filter((order) => order.status === 'PENDING');
+}
+
+/** Looks up a single order by its exchange-assigned id. */
+export function getOrderById(schema: StorageSchema, orderId: string): OrderRecord | undefined {
+  return schema.orders.find((order) => order.id === orderId);
+}
+
+/**
+ * Cancels a working order. Filled, rejected and already cancelled orders are
+ * immutable, so they report `ORDER_NOT_CANCELABLE` rather than silently
+ * rewriting settled history.
+ */
+export function cancelOrder(schema: StorageSchema, orderId: string): ExecutionResult {
+  const target = getOrderById(schema, orderId);
+  if (target === undefined) {
+    return rejection('ORDER_NOT_FOUND', schema);
+  }
+  if (target.status !== 'PENDING') {
+    return rejection('ORDER_NOT_CANCELABLE', schema);
+  }
+
+  const cancelledAt = nowIso();
+  const log: SystemLogEntry = {
+    id: generateCryptoId('LOG'),
+    timestamp: cancelledAt,
+    level: 'WARN',
+    source: 'ORDER_ENTRY',
+    message: `ORDER CANCELLED: ${target.side} ${target.amount} ${target.symbol} @ ${target.price.toFixed(2)}`,
+  };
+
+  return {
+    success: true,
+    updatedSchema: {
+      ...schema,
+      orders: schema.orders.map((order) =>
+        order.id === target.id ? { ...order, status: 'CANCELLED' as const } : order
+      ),
+      logs: [log, ...schema.logs],
+    },
+  };
+}
+
+/**
+ * Advances the resting order book against a tick of live prices.
+ *
+ * A buy fills when the market trades at or below its limit, a sell at or above
+ * it. Fills settle sequentially against the running ledger, so two orders
+ * filling on the same tick cannot both spend the same cash or sell the same
+ * coins. An order that cannot settle stays working; the original schema is
+ * returned by reference when nothing filled, which lets the caller skip the
+ * downstream state update entirely.
+ */
 export function evaluateOpenOrders(
   schema: StorageSchema,
   latestPrices: Record<string, number>
 ): StorageSchema {
+  let workingSchema = schema;
   let hasChanges = false;
-  let modifiedCash = schema.cashBalance;
-  const modifiedHoldings = { ...schema.holdings };
+
   const updatedOrders: OrderRecord[] = [];
   const newTransactions: TransactionRecord[] = [];
   const newLogs: SystemLogEntry[] = [];
@@ -240,7 +491,7 @@ export function evaluateOpenOrders(
     }
 
     const currentPrice = latestPrices[order.symbol];
-    if (!currentPrice || currentPrice <= 0) {
+    if (!isPositiveFinite(currentPrice)) {
       updatedOrders.push(order);
       continue;
     }
@@ -248,109 +499,31 @@ export function evaluateOpenOrders(
     const shouldFillBuy = order.side === 'BUY' && currentPrice <= order.price;
     const shouldFillSell = order.side === 'SELL' && currentPrice >= order.price;
 
-    if (shouldFillBuy || shouldFillSell) {
-      const fillPrice = order.price;
-      const totalVal = fillPrice * order.amount;
-      const fee = totalVal * MAKER_FEE_RATE;
-
-      if (order.side === 'BUY') {
-        const totalCost = totalVal + fee;
-        if (modifiedCash >= totalCost) {
-          hasChanges = true;
-          modifiedCash -= totalCost;
-          const currentH = modifiedHoldings[order.symbol] || createEmptyHolding(order.symbol, order.symbol);
-          modifiedHoldings[order.symbol] = recalculateHolding(
-            currentH,
-            currentH.amount + order.amount,
-            currentH.totalCost + totalVal,
-            currentPrice
-          );
-
-          updatedOrders.push({
-            ...order,
-            status: 'FILLED',
-            filledAmount: order.amount,
-            executedAt: new Date().toISOString(),
-          });
-          newTransactions.push({
-            id: generateCryptoId('TX'),
-            orderId: order.id,
-            symbol: order.symbol,
-            side: 'BUY',
-            executionPrice: fillPrice,
-            amount: order.amount,
-            totalValue: totalVal,
-            fee,
-            timestamp: new Date().toISOString(),
-          });
-          newLogs.push({
-            id: generateCryptoId('LOG'),
-            timestamp: new Date().toISOString(),
-            level: 'EXEC',
-            source: 'LIMIT_MATCH',
-            message: `LIMIT ORDER FILLED: BUY ${order.amount} ${order.symbol} @ ${fillPrice.toFixed(2)}`,
-          });
-          continue;
-        }
-      } else {
-        const currentH = modifiedHoldings[order.symbol];
-        if (currentH && currentH.amount >= order.amount) {
-          hasChanges = true;
-          const netGain = totalVal - fee;
-          modifiedCash += netGain;
-          const remainingAmount = currentH.amount - order.amount;
-          const costSold = currentH.averageEntryPrice * order.amount;
-
-          if (remainingAmount <= 0.000001) {
-            delete modifiedHoldings[order.symbol];
-          } else {
-            const remCost = Math.max(0, currentH.totalCost - costSold);
-            modifiedHoldings[order.symbol] = recalculateHolding(
-              currentH,
-              remainingAmount,
-              remCost,
-              currentPrice
-            );
-          }
-
-          updatedOrders.push({
-            ...order,
-            status: 'FILLED',
-            filledAmount: order.amount,
-            executedAt: new Date().toISOString(),
-          });
-          newTransactions.push({
-            id: generateCryptoId('TX'),
-            orderId: order.id,
-            symbol: order.symbol,
-            side: 'SELL',
-            executionPrice: fillPrice,
-            amount: order.amount,
-            totalValue: totalVal,
-            fee,
-            timestamp: new Date().toISOString(),
-          });
-          newLogs.push({
-            id: generateCryptoId('LOG'),
-            timestamp: new Date().toISOString(),
-            level: 'EXEC',
-            source: 'LIMIT_MATCH',
-            message: `LIMIT ORDER FILLED: SELL ${order.amount} ${order.symbol} @ ${fillPrice.toFixed(2)}`,
-          });
-          continue;
-        }
-      }
+    if (!shouldFillBuy && !shouldFillSell) {
+      updatedOrders.push(order);
+      continue;
     }
 
-    updatedOrders.push(order);
+    const outcome = applyFill(workingSchema, order, order.price, currentPrice, MAKER_FEE_RATE, 'LIMIT_MATCH');
+    if (outcome === null) {
+      // Price crossed the limit but the account cannot settle it: keep working.
+      updatedOrders.push(order);
+      continue;
+    }
+
+    workingSchema = outcome.schema;
+    hasChanges = true;
+    updatedOrders.push(outcome.order);
+    newTransactions.push(outcome.transaction);
+    newLogs.push(outcome.log);
   }
 
-  if (!hasChanges) return schema;
+  if (!hasChanges) {
+    return schema;
+  }
 
   const resultSchema: StorageSchema = {
-    ...schema,
-    cashBalance: modifiedCash,
-    holdings: modifiedHoldings,
+    ...workingSchema,
     orders: updatedOrders,
     transactions: [...newTransactions, ...schema.transactions],
     logs: [...newLogs, ...schema.logs],

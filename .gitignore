@@ -1,6 +1,8 @@
 node_modules
 dist
 dist-ssr
+*.tsbuildinfo
+.pnpm-store
 *.local
 .env
 .env.*
