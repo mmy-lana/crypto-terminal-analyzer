@@ -8,8 +8,12 @@ export default defineConfig({
     sourcemap: true,
   },
   test: {
-    environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // jsdom by default so component tests render real DOM. Pure-logic suites
+    // under src/utils and src/services opt back into `node` with a
+    // `// @vitest-environment node` docblock, which keeps them fast.
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     reporters: ['default'],
   },
 });

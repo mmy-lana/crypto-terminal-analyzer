@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* ------------------------------------------------------------------
+   DESIGN FOUNDATION — Bloomberg workstation palette
+   Phase 2 of plan.md §2.1. Every colour used in the terminal resolves
+   from these tokens so the whole UI can be re-themed in one place.
+------------------------------------------------------------------- */
 @theme {
   --color-terminal-black: #0a0b0d;
   --color-terminal-charcoal: #12151a;
@@ -10,12 +15,55 @@
   --color-terminal-cyan: #06b6d4;
   --color-terminal-emerald: #10b981;
   --color-terminal-rose: #f43f5e;
+
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 @layer base {
+  /* Zero system fonts: the terminal is monospace end to end. */
   * {
     box-sizing: border-box;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-family: var(--font-mono);
+    /* The universal `transparent` above silences the UA's blue flash on every
+       element — including the ones where a tap-highlight is the *only* feedback
+       a finger gets. Re-arm it on genuine controls just below. */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Declare the dark scheme to the UA so form controls, scrollbars, the caret
+     and the canvas backdrop are all themed by the browser instead of flashing
+     a light-mode widget on a near-black page. */
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Anything actually interactive gets its tap feedback back, and opts out of
+     the 300ms double-tap delay so a rapid series of order entries responds
+     immediately. `manipulation` still permits pinch-zoom, which the viewport
+     meta no longer disables. */
+  button,
+  a,
+  [role='button'],
+  [role='tab'],
+  input,
+  select,
+  textarea,
+  summary,
+  label {
+    -webkit-tap-highlight-color: rgba(6, 182, 212, 0.18);
+    touch-action: manipulation;
+  }
+
+  /* Keyboard focus stays visible on a dark UI at every breakpoint. */
+  :focus-visible {
+    outline: 2px solid var(--color-terminal-cyan);
+    outline-offset: 2px;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
   }
 
   body {
@@ -25,13 +73,246 @@
     padding: 0;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+  }
+
+  /* Numerical alignment: every figure uses tabular widths so columns
+     never jitter as digits change on each tick. */
+  input,
+  button,
+  select,
+  textarea {
+    font-family: inherit;
+  }
+
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-terminal-amber) 35%, transparent);
+    color: #ffffff;
+  }
+
+  :focus-visible {
+    outline: 1px solid var(--color-terminal-amber);
+    outline-offset: 1px;
+  }
+
+  /* Dense terminals read better without a soft focus ring on the whole card. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
   }
 }
 
+/* ------------------------------------------------------------------
+   SCANLINE OVERLAY
+   A single repeating horizontal gradient pinned over the whole app.
+   Fixed (not absolute) so it survives every scroll container and
+   never affects the layout of a panel beneath it.
+------------------------------------------------------------------- */
+.scanline-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.022) 0px,
+    rgba(255, 255, 255, 0.022) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: overlay;
+}
+
+/* CRT bloom around the viewport edge. */
+.vignette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  pointer-events: none;
+  box-shadow: inset 0 0 140px 20px rgba(0, 0, 0, 0.55);
+}
+
+@keyframes terminal-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-pulse-slow {
+  animation: terminal-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes terminal-flash {
+  0% {
+    background-color: color-mix(in oklab, var(--color-terminal-emerald) 22%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.animate-exec-flash {
+  animation: terminal-flash 700ms ease-out 1;
+}
+
+@keyframes terminal-scan {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(100vh);
+  }
+}
+
+.scanline-sweep {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 25vh;
+  z-index: 58;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in oklab, var(--color-terminal-cyan) 6%, transparent),
+    transparent
+  );
+  animation: terminal-scan 9s linear infinite;
+}
+
+/* ------------------------------------------------------------------
+   SCROLLBARS — zero-chrome where noted, thin elsewhere
+------------------------------------------------------------------- */
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #262c36 transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: #262c36;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: #3a424f;
+}
+
+/* Ticker marquee. Duplicated track = seamless loop; the track is
+   translated -50% so the second copy lands exactly where the first
+   ended, which makes the wrap invisible. */
+@keyframes ticker-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.ticker-track {
+  display: flex;
+  width: max-content;
+  animation: ticker-scroll 48s linear infinite;
+}
+
+.ticker-track:hover,
+.ticker-track:focus-within {
+  animation-play-state: paused;
+}
+
+.ticker-viewport {
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, #000 3%, #000 97%, transparent);
+}
+
+/* Bottom dock clears the iOS home indicator. */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.h-safe {
+  height: env(safe-area-inset-top, 0px);
+}
+
+/* ------------------------------------------------------------------
+   REDUCED MOTION
+   The terminal is information dense, not decorative, so no animation here
+   carries meaning: the tape scrolls, the scanline sweeps, the status lamp
+   breathes. None of that survives being switched off, so the OS setting
+   stops the loops outright rather than merely shortening them — a 0.01ms
+   animation still *plays*, and a marquee played once ends parked on its own
+   loop seam, which reads as an empty strip.
+------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    /* Smooth scrolling is motion too: jump to the target instead of gliding. */
+    scroll-behavior: auto !important;
+  }
+
+  /* The unbounded loops, cancelled outright. The one-shot execution flash is
+     a background colour and nothing more, so it stops here too and simply
+     leaves the row in its resting state. */
+  .ticker-track,
+  .animate-pulse-slow,
+  .animate-exec-flash,
+  .scanline-sweep {
+    animation: none !important;
+  }
+
+  /* Static fallback for the tape. The animation *was* the scroll, so the
+     scroll has to be handed back: the viewport becomes an ordinary horizontal
+     scroller parked on the first quote, and the quote buttons stay focusable,
+     so keyboard focus still walks them into view. */
+  .ticker-viewport {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .ticker-track {
+    /* Un-transformed, so the strip shows the first run of quotes instead of
+       the half-scrolled seam the end keyframe would leave behind. */
+    transform: none;
+  }
+
+  /* The duplicated second run only exists to make the loop seamless. With the
+     loop gone it would print every quote twice, so it leaves the layout. */
+  .ticker-track > [aria-hidden="true"] {
+    display: none;
+  }
 }

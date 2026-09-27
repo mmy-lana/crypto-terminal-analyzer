@@ -2,8 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>crypto-terminal-analyzer</title>
+    <!-- No maximum-scale/user-scalable: the tables are dense but pinch-zoom is the
+         operator's only way to read a 11px figure on a phone, and disabling it
+         fails WCAG 1.4.4. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0b0d" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="Paper-trading terminal for a simulated crypto market: live order book, order ticket, portfolio analytics and an execution ledger."
+    />
+    <title>BLOOMBERG // CRYPTO — Paper Trading Terminal</title>
   </head>
   <body class="bg-[#0a0b0d] text-neutral-200 antialiased overflow-x-hidden selection:bg-amber-500/30 selection:text-amber-200">
     <div id="root"></div>
