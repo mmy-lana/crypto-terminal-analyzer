@@ -9,9 +9,7 @@ export interface TerminalInputProps {
   /** Called with the next value when a stepper button is pressed. */
   onIncrement?: () => void;
   onDecrement?: () => void;
-  min?: number;
   max?: number;
-  step?: number;
   disabled?: boolean;
   /** Static unit rendered inside the field, e.g. "BTC" or "USD". */
   unit?: string;
@@ -38,8 +36,21 @@ const STEP_KEYS: Record<string, 'increment' | 'decrement'> = {
 /**
  * Rigid numeric field with stepper targets.
  *
- * Both stepper buttons are full 44x44px touch targets, the native spinners
- * are suppressed in index.css, and ArrowUp/ArrowDown mirror the steppers so
+ * The input is `type="text"`, not `type="number"`, and that is deliberate. A
+ * number input runs the value through the HTML sanitization algorithm before
+ * the change handler is ever called, which silently discards any character the
+ * locale uses for the decimal point. A German operator typing `0,5` does not
+ * reach this component with a comma: the field delivers an empty string, and no
+ * amount of validation downstream can recover a character the browser already
+ * threw away. `inputMode="decimal"` still puts a numeric keypad under the
+ * operator's thumb on a phone, and the steppers were always ours.
+ *
+ * Validation is the caller's job — this component forwards whatever text it is
+ * given and reports it verbatim, so the ticket can decide what a number is and
+ * say so when the text is not one.
+ *
+ * Both stepper buttons are full 44x44px touch targets, and ArrowUp/ArrowDown
+ * mirror the steppers so
  * a keyboard operator never has to reach for the mouse. The hint and the
  * error are wired to the input as descriptions rather than left as loose text,
  * so focusing the field reads both back — and the error branch keeps its own
@@ -52,8 +63,6 @@ export const TerminalInput: React.FC<TerminalInputProps> = ({
   onPaste,
   onIncrement,
   onDecrement,
-  min = 0,
-  step = 0.01,
   disabled = false,
   unit,
   hint,
@@ -115,7 +124,7 @@ export const TerminalInput: React.FC<TerminalInputProps> = ({
           id={inputId}
           name={fieldName}
           ref={ref}
-          type="number"
+          type="text"
           inputMode={inputMode}
           autoComplete="off"
           spellCheck={false}
@@ -123,8 +132,6 @@ export const TerminalInput: React.FC<TerminalInputProps> = ({
           onChange={onChange}
           onPaste={onPaste}
           onKeyDown={handleKeyDown}
-          min={min}
-          step={step}
           disabled={disabled}
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy}

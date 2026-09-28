@@ -85,17 +85,6 @@
     font-family: inherit;
   }
 
-  input[type="number"]::-webkit-outer-spin-button,
-  input[type="number"]::-webkit-inner-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-  }
-
-  input[type="number"] {
-    -moz-appearance: textfield;
-    appearance: textfield;
-  }
-
   ::selection {
     background-color: color-mix(in oklab, var(--color-terminal-amber) 35%, transparent);
     color: #ffffff;

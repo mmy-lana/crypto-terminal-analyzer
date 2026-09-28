@@ -17,6 +17,7 @@ import React from 'react';
 
 import App from '../App';
 import { ErrorBoundary } from '../components/primitives/ErrorBoundary';
+import { normalizeNumericInput } from '../components/domain/ExecutionTerminal';
 import {
   BASE_ASSETS,
   SPARKLINE_POINTS,
@@ -373,6 +374,81 @@ describe('phase 2 / transaction settlement', () => {
     // The lock is free again: a second order still reaches the engine and is
     // judged on its own merits, not blocked by the first one's rejection.
     await setAmount('0.001');
+    await clickButton(/^BUY .* @ MARKET$/);
+    expect(screen.getAllByText(/FILLED|EXECUTED/i).length).toBeGreaterThan(0);
+  });
+});
+
+describe('phase 3 / fractional satoshi lifecycle', () => {
+  // The spec figure: 0.00000042 BTC, a hundredth of a satoshi's smaller half.
+  const FRACTIONAL = 0.00000042;
+
+  it('opens and fully closes a position the old dust floor would have eaten', () => {
+    const opened = executeMarketOrder(makeSchema(), BTC, 'BUY', FRACTIONAL);
+    expect(opened.success).toBe(true);
+    expect(opened.updatedSchema.holdings.BTC?.amount).toBeCloseTo(FRACTIONAL, 15);
+
+    // A full exit of the whole position, with nothing left behind.
+    const closed = executeMarketOrder(opened.updatedSchema, BTC, 'SELL', FRACTIONAL);
+    expect(closed.success).toBe(true);
+    expect(closed.updatedSchema.holdings.BTC).toBeUndefined();
+  });
+
+  it('survives a partial exit without losing the remainder or the basis', () => {
+    const opened = executeMarketOrder(makeSchema(), BTC, 'BUY', FRACTIONAL);
+    const half = executeMarketOrder(opened.updatedSchema, BTC, 'SELL', FRACTIONAL / 2);
+
+    expect(half.success).toBe(true);
+    const left = half.updatedSchema.holdings.BTC;
+    expect(left).toBeDefined();
+    expect(left?.amount).toBeCloseTo(FRACTIONAL / 2, 15);
+    expect(left?.totalCost).toBeGreaterThan(0);
+  });
+});
+
+describe('phase 3 / locale decimal comma', () => {
+  it('reads a comma as a decimal point where a group of three would be wrong', () => {
+    expect(normalizeNumericInput('0,5')).toBe('0.5');
+    expect(normalizeNumericInput('1,5')).toBe('1.5');
+    expect(normalizeNumericInput('0,00042')).toBe('0.00042');
+    expect(normalizeNumericInput('')).toBe('');
+    expect(normalizeNumericInput('0.5')).toBe('0.5');
+  });
+
+  it('reads a group of exactly three digits as thousands', () => {
+    // The misread here is a 1000x sizing error, so the rule has to be exact.
+    expect(normalizeNumericInput('1,500')).toBe('1500');
+    expect(normalizeNumericInput('12,345')).toBe('12345');
+    expect(normalizeNumericInput('1,234,567')).toBe('1234567');
+  });
+
+  it('treats a leading zero group as a decimal', () => {
+    // Nobody writes a thousands-grouped number as 0,123.
+    expect(normalizeNumericInput('0,123')).toBe('0.123');
+  });
+
+  it('refuses text that is not a number rather than guessing', () => {
+    expect(normalizeNumericInput('1.234,56')).toBeNull();
+    expect(normalizeNumericInput('1,2,3')).toBeNull();
+    expect(normalizeNumericInput('abc')).toBeNull();
+    expect(normalizeNumericInput('1e5')).toBeNull();
+  });
+
+  it('accepts a comma-typed amount on the ticket and settles it', async () => {
+    setViewportWidth(1440);
+    render(<App />);
+    await clickButton(/^TRADE/);
+
+    // Typed the way a de-DE keyboard produces it. Before normalisation the
+    // field refused the keystroke with a format error and the order could
+    // never be placed.
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Amount'), { target: { value: '0,5' } });
+    });
+
+    const field = screen.getByLabelText('Amount') as HTMLInputElement;
+    expect(field.value).toBe('0.5');
+
     await clickButton(/^BUY .* @ MARKET$/);
     expect(screen.getAllByText(/FILLED|EXECUTED/i).length).toBeGreaterThan(0);
   });

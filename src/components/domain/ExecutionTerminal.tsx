@@ -52,6 +52,46 @@ const PRICE_FORMAT_COPY = 'Limit price takes digits and at most one decimal poin
  * percentage presets size against what is actually available: cash for a buy,
  * the live position for a sell.
  */
+/**
+ * Canonicalises a number typed where the decimal point is written as a comma.
+ *
+ * A ticket has to hand the engine one spelling, and `Number` accepts only the
+ * plain one, so the locale difference has to be resolved before validation
+ * rather than around it. Which reading a comma gets is settled by the only rule
+ * that does not have to guess: a group of exactly three digits is a thousands
+ * separator, anything else is a decimal point. `1,500` is fifteen hundred and
+ * `0,5` is a half, and neither is reinterpreted on the way through.
+ *
+ * A leading group of `0` is the exception that makes the rule work: nobody
+ * writes a thousands-grouped number as `0,123`, so that spelling is a decimal.
+ *
+ * One genuine ambiguity survives — `1,234` — and it is read as thousands, which
+ * is the grouping it is valid in. An operator who meant 1.234 writes a decimal
+ * point, exactly as everywhere else in the ticket.
+ *
+ * Returns null when the text is not a number at all, so the caller can refuse
+ * the keystroke and say so instead of dropping it in silence.
+ */
+export function normalizeNumericInput(raw: string): string | null {
+  if (raw === '') return '';
+  if (!raw.includes(',')) {
+    return /^\d*\.?\d*$/.test(raw) ? raw : null;
+  }
+  // Both separators present: mixed notation, and no safe way to read it.
+  if (raw.includes('.')) return null;
+
+  const grouped = /^\d{1,3}(,\d{3})+$/;
+  const leadingGroup = raw.split(',')[0] ?? '';
+  if (grouped.test(raw) && leadingGroup !== '0') {
+    return raw.replace(/,/g, '');
+  }
+  // Exactly one comma, and not a thousands group: it is the decimal point.
+  if (/^\d*,\d*$/.test(raw)) {
+    return raw.replace(',', '.');
+  }
+  return null;
+}
+
 export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className = '' }) => {
   const {
     selectedAsset,
@@ -138,10 +178,10 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
   }, []);
 
   const handleAmountChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const next = event.target.value;
     // Accept only a plain decimal while typing; the engine validates the rest.
     // A refused keystroke says so — dropping it in silence looks like a dead field.
-    if (next !== '' && !/^\d*\.?\d*$/.test(next)) {
+    const next = normalizeNumericInput(event.target.value);
+    if (next === null) {
       setError({ field: 'amount', message: AMOUNT_FORMAT_COPY });
       return;
     }
@@ -150,8 +190,8 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
   }, []);
 
   const handlePriceChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const next = event.target.value;
-    if (next !== '' && !/^\d*\.?\d*$/.test(next)) {
+    const next = normalizeNumericInput(event.target.value);
+    if (next === null) {
       setError({ field: 'price', message: PRICE_FORMAT_COPY });
       return;
     }
@@ -161,7 +201,7 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
 
   const handleAmountPaste = useCallback((event: React.ClipboardEvent<HTMLInputElement>) => {
     const pasted = event.clipboardData.getData('text').trim();
-    if (pasted !== '' && /^\d*\.?\d*$/.test(pasted)) return;
+    if (pasted !== '' && normalizeNumericInput(pasted) !== null) return;
     // A number input swallows a non-numeric paste on its own, so the refusal has
     // to be raised here or the operator watches a paste do nothing at all.
     event.preventDefault();
@@ -392,8 +432,6 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
           unit={symbol}
           inputMode="decimal"
           disabled={isSubmitting}
-          step={0.01}
-          min={0}
           onIncrement={() => applyPreset(25)}
           onDecrement={() => setAmountText('')}
           hint={
@@ -415,8 +453,6 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
             unit="USD"
             inputMode="decimal"
             disabled={isSubmitting}
-            step={0.01}
-            min={0}
             onIncrement={() => setPriceText(String(Number((limitPrice + 1 || 1).toFixed(2))))}
             onDecrement={() => setPriceText(String(Number(Math.max(0.01, limitPrice - 1 || 0.01).toFixed(2))))}
             hint={`Mark ${formatCurrency(markPrice)}`}

@@ -119,7 +119,10 @@ describe('global hotkeys', () => {
     });
 
     expect(sideButton(/^SELL$/i)).toHaveAttribute('aria-pressed', 'true');
-    expect(amount).toHaveValue(0.5);
+    // A string, because the field is type="text": a number input sanitises
+    // through the DOM and jest-dom hands back a number, which is exactly the
+    // behaviour that swallowed a locale decimal comma.
+    expect(amount).toHaveValue('0.5');
   });
 
   it('does not hijack modified keystrokes the browser or OS owns', () => {
