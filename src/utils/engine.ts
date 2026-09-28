@@ -117,6 +117,43 @@ export function estimateOrder(
   return { executionPrice, totalValue, fee, cashDelta };
 }
 
+/**
+ * Cash committed to resting buy-limit orders.
+ *
+ * Placing a limit order debits nothing — the order may never fill — but the cash
+ * it will need is spoken for the moment it rests. Without an escrow the same
+ * balance can back any number of working buys: each is checked against a
+ * `cashBalance` that none of them has touched, and all of them pass. They then
+ * fill against collateral that has already been spent. `applyFill` refuses the
+ * ones that no longer have cover, so the ledger does not go negative, but the
+ * order does not fail either: it stays `PENDING`, is retried on every market
+ * tick, and sits in the working-orders queue for the rest of the session as an
+ * order the operator can neither see through nor escape.
+ *
+ * Escrowed rather than debited, deliberately. The notional stays in
+ * `cashBalance`, so a fill, a cancel and the portfolio total need no
+ * compensating entry, and the reserved amount is released the instant the order
+ * stops resting. What is withheld is the *available* figure, which is what a new
+ * order is judged against.
+ */
+export function reservedCash(schema: StorageSchema): number {
+  let total = 0;
+  for (const order of schema.orders) {
+    if (order.side !== 'BUY' || order.status !== 'PENDING') continue;
+    // A partially filled order has already been charged for the filled part, so
+    // only the remainder is still collateral.
+    const remaining = order.amount - order.filledAmount;
+    if (remaining <= 0) continue;
+    total += Math.abs(estimateOrder(order.price, remaining, 'LIMIT', 'BUY').cashDelta);
+  }
+  return total;
+}
+
+/** Cash an operator can actually commit to a new order right now. */
+export function availableCash(schema: StorageSchema): number {
+  return Math.max(0, schema.cashBalance - reservedCash(schema));
+}
+
 function isPositiveFinite(value: number | undefined | null): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -213,7 +250,15 @@ function applyFill(
   fillPrice: number,
   markPrice: number,
   feeRate: number,
-  source: string
+  source: string,
+  /**
+   * Cash this fill may draw on. Defaults to the ledger balance, which is the
+   * right answer for a resting order: its own collateral is already inside
+   * `reservedCash`, so discounting the escrow here would make the fill refuse
+   * the very reservation that was placed to guarantee it. A market order
+   * reserves nothing, so its caller passes the unencumbered figure instead.
+   */
+  spendable: number = schema.cashBalance
 ): FillOutcome | null {
   const executedAt = nowIso();
   const totalValue = fillPrice * order.amount;
@@ -225,7 +270,7 @@ function applyFill(
 
   if (order.side === 'BUY') {
     const debit = totalValue + fee;
-    if (schema.cashBalance < debit) {
+    if (spendable < debit) {
       return null;
     }
 
@@ -356,7 +401,17 @@ export function executeMarketOrder(
     createdAt,
   };
 
-  const outcome = applyFill(schema, pendingOrder, executionPrice, asset.currentPrice, TAKER_FEE_RATE, 'MATCH_ENGINE');
+  // A market order holds no reservation of its own, so it is funded from cash
+  // that working buy limits have not already escrowed.
+  const outcome = applyFill(
+    schema,
+    pendingOrder,
+    executionPrice,
+    asset.currentPrice,
+    TAKER_FEE_RATE,
+    'MATCH_ENGINE',
+    availableCash(schema)
+  );
   if (outcome === null) {
     return rejection(side === 'BUY' ? 'INSUFFICIENT_FUNDS' : 'INSUFFICIENT_ASSET_BALANCE', schema);
   }
@@ -396,7 +451,9 @@ export function placeLimitOrder(
   }
 
   const estimate = estimateOrder(limitPrice, amount, 'LIMIT', side);
-  if (side === 'BUY' && schema.cashBalance < Math.abs(estimate.cashDelta)) {
+  // Judged against unencumbered cash, not the ledger balance: working buys
+  // ahead of this one have already reserved their collateral.
+  if (side === 'BUY' && availableCash(schema) < Math.abs(estimate.cashDelta)) {
     return rejection('INSUFFICIENT_FUNDS', schema);
   }
   if (side === 'SELL') {

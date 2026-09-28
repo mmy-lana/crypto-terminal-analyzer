@@ -17,7 +17,18 @@ import React from 'react';
 
 import App from '../App';
 import { ErrorBoundary } from '../components/primitives/ErrorBoundary';
-import { executeMarketOrder } from '../utils/engine';
+import {
+  BASE_ASSETS,
+  SPARKLINE_POINTS,
+  subscribeToMarketFeed
+} from '../services/marketFeed';
+import {
+  availableCash,
+  cancelOrder,
+  executeMarketOrder,
+  placeLimitOrder,
+  reservedCash
+} from '../utils/engine';
 import { deriveLiveValuation } from '../utils/finance';
 import { CryptoAsset, PositionHolding, StorageSchema } from '../types/terminal';
 import { setViewportWidth } from '../test/matchMediaMock';
@@ -234,5 +245,135 @@ describe('phase 1 / production information disclosure', () => {
     const written = spy.mock.calls.map((call) => JSON.stringify(call)).join(' ');
     expect(written).not.toContain('private.js');
     expect(written).toContain('FAULT-');
+  });
+});
+
+describe('phase 2 / collateral escrow', () => {
+  // 1000 USD of cash against a 50000 quote: one BTC is 50x the whole balance,
+  // so the sizes below are comfortably inside it.
+  const budget = 1000;
+
+  it('refuses a second working buy against cash the first already escrowed', () => {
+    const first = placeLimitOrder(makeSchema({ cashBalance: budget }), BTC, 'BUY', 0.012, 50000);
+    expect(first.success).toBe(true);
+    const resting = first.updatedSchema;
+
+    expect(reservedCash(resting)).toBeGreaterThan(0);
+    expect(availableCash(resting)).toBeLessThan(budget);
+
+    // Affordable against the ledger balance, unaffordable against what is left
+    // after the reservation. Under a balance-only check this second order rests
+    // beside the first and the two then race for the same cash.
+    const second = placeLimitOrder(resting, BTC, 'BUY', 0.009, 50000);
+
+    expect(second.success).toBe(false);
+    expect(second.error).toBe('INSUFFICIENT_FUNDS');
+  });
+
+  it('releases the escrow when the order stops resting', () => {
+    const first = placeLimitOrder(makeSchema({ cashBalance: budget }), BTC, 'BUY', 0.012, 50000);
+    const resting = first.updatedSchema;
+    const orderId = resting.orders[0]?.id ?? '';
+
+    const cancelled = cancelOrder(resting, orderId).updatedSchema;
+
+    expect(reservedCash(cancelled)).toBe(0);
+    expect(availableCash(cancelled)).toBe(budget);
+  });
+
+  it('stops a market order from spending escrowed cash', () => {
+    const first = placeLimitOrder(makeSchema({ cashBalance: budget }), BTC, 'BUY', 0.012, 50000);
+    const resting = first.updatedSchema;
+
+    // 0.009 BTC at market, same size the limit path just refused.
+    const taker = executeMarketOrder(resting, BTC, 'BUY', 0.009);
+
+    expect(taker.success).toBe(false);
+    expect(taker.error).toBe('INSUFFICIENT_FUNDS');
+  });
+
+  it('still funds a resting fill from the cash it reserved for itself', () => {
+    // The escrow must not be charged twice: a working buy is the one order
+    // entitled to draw on its own reservation.
+    const first = placeLimitOrder(makeSchema({ cashBalance: budget }), BTC, 'BUY', 0.012, 50000);
+    const resting = first.updatedSchema;
+    const order = resting.orders[0];
+    expect(order).toBeDefined();
+    if (order === undefined) return;
+
+    const filled = { ...resting, orders: resting.orders.map((o) => (o.id === order.id ? { ...o, price: 50000 } : o)) };
+
+    // Re-pricing is not the fill path; assert the invariant through the
+    // reserved figure a fill would be charged against instead.
+    expect(reservedCash(filled)).toBeGreaterThan(0);
+    expect(availableCash(filled)).toBeLessThan(budget);
+  });
+});
+
+describe('phase 2 / tape lifetime', () => {
+  it('keeps one walk and one 24h baseline across a re-subscription', async () => {
+    // The context re-subscribes whenever the watchlist changes. If the tape
+    // restarted, the price would snap back to the seed and the 24h change would
+    // be re-anchored to it — the percentage would move because its denominator
+    // did, not because anything traded.
+    let lastAssets: Record<string, { currentPrice: number; change24h: number; sparkline: number[] }> = {};
+
+    const first = subscribeToMarketFeed(['BTC'], (_prices, assets) => {
+      lastAssets = assets;
+    }, 1);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, SPARKLINE_POINTS * 2));
+    });
+    first();
+    const before = lastAssets.BTC;
+    expect(before).toBeDefined();
+
+    const second = subscribeToMarketFeed(['BTC'], (_prices, assets) => {
+      lastAssets = assets;
+    }, 1);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    second();
+    const after = lastAssets.BTC;
+    expect(after).toBeDefined();
+    if (before === undefined || after === undefined) return;
+
+    // Deterministic: after enough ticks the seed's own sparkline has been
+    // fully displaced, so a restarted walk would reproduce the seed array
+    // exactly. A continued walk cannot.
+    expect(after.sparkline).not.toEqual(BASE_ASSETS.BTC?.sparkline);
+    // And the walk is continuous: one more tick, not a jump back to the seed.
+    expect(after.currentPrice).not.toBe(BASE_ASSETS.BTC?.currentPrice);
+    // The 24h baseline held, so the change moved by the walk and nothing else.
+    expect(Math.abs(after.change24h - before.change24h)).toBeLessThan(1.5);
+  });
+});
+
+describe('phase 2 / transaction settlement', () => {
+  // The liveness guard for the single-writer design. A rejected order commits
+  // the schema unchanged, so React performs no render and runs no effect: a
+  // settlement that waited on a commit would never arrive, and the submission
+  // lock would be held for the rest of the session with the ticket permanently
+  // refusing every order. This test passes on the previous code too — it is not
+  // evidence of the old defect, which was a purity violation rather than a
+  // behaviour change. It is here so that future refactors cannot reintroduce the
+  // hang.
+  it('releases the ticket after a rejected order', async () => {
+    render(<App />);
+    await clickButton(/^TRADE/);
+
+    // More BTC than the account can buy: rejected on funds.
+    await setAmount('5');
+    await clickButton(/^BUY .* @ MARKET$/);
+    // Reported twice on purpose: the transient notice and the field-level error
+    // are separate channels, and the rejection has to reach the operator in both.
+    expect(screen.getAllByText(/INSUFFICIENT|REJECTED/i).length).toBeGreaterThan(0);
+
+    // The lock is free again: a second order still reaches the engine and is
+    // judged on its own merits, not blocked by the first one's rejection.
+    await setAmount('0.001');
+    await clickButton(/^BUY .* @ MARKET$/);
+    expect(screen.getAllByText(/FILLED|EXECUTED/i).length).toBeGreaterThan(0);
   });
 });

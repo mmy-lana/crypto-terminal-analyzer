@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 
 import { useTerminal } from '../../context/TerminalContext';
 import { reconstructLedger } from '../../utils/finance';
+import { reservedCash } from '../../utils/engine';
 import {
   formatCurrency,
   formatPercent,
@@ -43,13 +44,23 @@ export const PortfolioSummaryPanel: React.FC<PortfolioSummaryPanelProps> = ({ cl
     return { curve, maxDrawdownPercent };
   }, [reconstruction.equityCurve, riskMetrics.maxDrawdownPercent]);
 
+  // Cash under a resting buy limit is spoken for even though it is still in the
+  // ledger, so the figure an operator can act on is the unencumbered one. With
+  // nothing reserved the line reads exactly as it always did.
+  const reserved = reservedCash(schema);
+  const available = Math.max(0, schema.cashBalance - reserved);
+
   return (
     <div className={`flex min-h-0 flex-col ${className}`}>
       <div className="grid shrink-0 grid-cols-2 gap-px border-b border-[#262c36] bg-[#262c36]">
         <MetricCell
           label="Total equity"
           value={isFlat ? NULL_PLACEHOLDER : formatCurrency(livePortfolio.totalEquity)}
-          secondary={`Cash ${formatCurrency(schema.cashBalance)}`}
+          secondary={
+            reserved > 0
+              ? `Cash ${formatCurrency(available)} available, ${formatCurrency(reserved)} reserved`
+              : `Cash ${formatCurrency(schema.cashBalance)}`
+          }
           info="Total net worth of your account: uninvested cash plus the current market value of everything you hold."
           tone="amber"
           className="bg-[#12151a]"

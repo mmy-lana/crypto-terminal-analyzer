@@ -2,7 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { OrderType, OrderRecord } from '../../types/terminal';
 import { useTerminal } from '../../context/TerminalContext';
-import { MAKER_FEE_RATE, SLIPPAGE_FACTOR, TAKER_FEE_RATE, estimateOrder, getOpenOrders } from '../../utils/engine';
+import {
+  MAKER_FEE_RATE,
+  SLIPPAGE_FACTOR,
+  TAKER_FEE_RATE,
+  availableCash,
+  estimateOrder,
+  getOpenOrders,
+} from '../../utils/engine';
 import { describeExecutionError, type RemedyContext } from '../../utils/errorCopy';
 import { formatCurrency, formatPercent, formatQuantity } from '../../utils/formatters';
 import { ActionButton } from '../primitives/ActionButton';
@@ -111,7 +118,10 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
     return estimateOrder(previewPrice, amount, orderType, side);
   }, [amount, hasAmount, markPrice, orderType, hasPrice, limitPrice, side]);
 
-  const availableForSide = side === 'BUY' ? schema.cashBalance : (livePortfolio.holdings[symbol]?.amount ?? 0);
+  // BUY presets draw on unencumbered cash: cash already reserved by a working
+  // buy limit is not spendable, and offering it here would build a ticket the
+  // engine will reject.
+  const availableForSide = side === 'BUY' ? availableCash(schema) : (livePortfolio.holdings[symbol]?.amount ?? 0);
   const availableLabel = side === 'BUY' ? 'cash' : 'position';
 
   const slippageWarning = useMemo(() => {

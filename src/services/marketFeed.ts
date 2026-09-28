@@ -314,6 +314,39 @@ function deriveOpen24h(asset: CryptoAsset): number {
 }
 
 /**
+ * Process-wide tape state.
+ *
+ * The quotes and the 24h baselines they are measured against have to be the
+ * same objects for the lifetime of the process, or the two disagree.
+ *
+ * They used to be built per subscription, which meant a re-subscription
+ * restarted the walk from the seed prices *and* re-derived every `open24h` from
+ * the price at that moment. The context re-subscribes whenever the watchlist
+ * changes, so adding or removing a symbol silently rewrote the 24h change of
+ * every symbol still on the board: the percentage jumped because its
+ * denominator had moved, not because anything traded. Hoisting the prices
+ * without the baselines would have been worse than leaving both alone — a fixed
+ * open against a reset price is exactly the discontinuity above, frozen.
+ *
+ * One connection, many consumers: subscribers read this state rather than
+ * walking their own, which is what a real market feed does. The terminal holds
+ * a single subscription at a time, so the walk advances once per tick.
+ */
+const liveAssets: Record<string, CryptoAsset> = { ...BASE_ASSETS };
+const sessions: Record<string, SymbolSession> = {};
+
+/** The 24h open for a symbol, derived once and then held for the session. */
+function sessionFor(symbol: string, asset: CryptoAsset): SymbolSession {
+  const existing = sessions[symbol];
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created: SymbolSession = { open24h: deriveOpen24h(asset) };
+  sessions[symbol] = created;
+  return created;
+}
+
+/**
  * Subscribes to the simulated tape.
  *
  * The first tick is emitted synchronously — a panel mounting against a live
@@ -329,30 +362,18 @@ export function subscribeToMarketFeed(
   onTick: TickCallback,
   intervalMs: number = MARKET_TICK_INTERVAL_MS
 ): () => void {
-  const localAssets: Record<string, CryptoAsset> = { ...BASE_ASSETS };
-  const sessions: Record<string, SymbolSession> = {};
   const watched = Array.from(
     new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter((symbol) => symbol.length > 0))
   );
   const activeSymbols = watched.length > 0 ? watched : [...DEFAULT_WATCHLIST];
   const cadence = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : MARKET_TICK_INTERVAL_MS;
 
-  const sessionFor = (symbol: string, asset: CryptoAsset): SymbolSession => {
-    const existing = sessions[symbol];
-    if (existing !== undefined) {
-      return existing;
-    }
-    const created: SymbolSession = { open24h: deriveOpen24h(asset) };
-    sessions[symbol] = created;
-    return created;
-  };
-
   const emitTick = (): void => {
     const timestamp = new Date().toISOString();
     const priceUpdates: Record<string, number> = {};
 
     for (const symbol of activeSymbols) {
-      const existing = localAssets[symbol] ?? createFallbackAsset(symbol);
+      const existing = liveAssets[symbol] ?? createFallbackAsset(symbol);
       const session = sessionFor(symbol, existing);
 
       // Random walk with a slight upward bias: -0.4% to +0.4% per tick.
@@ -365,7 +386,7 @@ export function subscribeToMarketFeed(
       const change24h =
         session.open24h > 0 ? Number((((newPrice - session.open24h) / session.open24h) * 100).toFixed(2)) : 0;
 
-      localAssets[symbol] = {
+      liveAssets[symbol] = {
         ...existing,
         currentPrice: newPrice,
         change24h,
@@ -379,7 +400,7 @@ export function subscribeToMarketFeed(
       priceUpdates[symbol] = newPrice;
     }
 
-    onTick(priceUpdates, { ...localAssets });
+    onTick(priceUpdates, { ...liveAssets });
   };
 
   emitTick();

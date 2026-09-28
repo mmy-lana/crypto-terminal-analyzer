@@ -113,11 +113,44 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
   // a state check.
   const submittingRef = useRef(false);
 
-  // Latest committed schema, readable synchronously from an event handler.
+  /**
+   * Latest committed schema, readable synchronously from an event handler.
+   *
+   * Every writer advances it in the same turn it commits, so it is the freshest
+   * schema rather than the freshest *rendered* one. The effect re-syncs it for
+   * changes that bypass the writers entirely: the initial load and
+   * `resetPortfolio`, which writes state from inside the storage hook.
+   */
   const schemaRef = useRef<StorageSchema>(schema);
   useEffect(() => {
     schemaRef.current = schema;
   }, [schema]);
+
+  /**
+   * Single writer for the schema.
+   *
+   * The updater is advanced against a synchronous mirror and committed as a
+   * constant, which is what lets a caller read the result of its own mutation
+   * without waiting for React. Every writer goes through here, so the mirror
+   * cannot fall behind: two writes in one frame see each other because the
+   * second reads what the first already stored, not what React had rendered
+   * when the frame began.
+   *
+   * The commit stays a functional update on purpose. The storage hook documents
+   * that a pre-computed object drops writes when two mutations land together,
+   * and that is true of any object derived from a render-time snapshot. This
+   * one is derived from the mirror, which is advanced in the same synchronous
+   * turn, so there is no snapshot to go stale.
+   */
+  const commitSchema = useCallback(
+    (updater: (prev: StorageSchema) => StorageSchema): StorageSchema => {
+      const next = updater(schemaRef.current);
+      schemaRef.current = next;
+      updateSchema(() => next);
+      return next;
+    },
+    [updateSchema]
+  );
 
   const pushNotice = useCallback((level: TerminalNotice['level'], message: string) => {
     setNotice({
@@ -137,36 +170,43 @@ export const TerminalProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     const unsubscribe = subscribeToMarketFeed(symbolsToWatch, (latestPrices, updatedAssets) => {
       setAssets((prev) => ({ ...prev, ...updatedAssets }));
-      // Functional updater: the resting-order queue is evaluated against the
-      // freshest schema, never a stale closure.
-      updateSchema((prevSchema) => evaluateOpenOrders(prevSchema, latestPrices));
+      // Through the same single writer as an order submission: the resting-order
+      // queue is evaluated against the freshest schema, and a tick that lands in
+      // the same frame as a fill is applied to the result of it, not over it.
+      commitSchema((prevSchema) => evaluateOpenOrders(prevSchema, latestPrices));
     });
 
     return () => {
       unsubscribe();
     };
-  }, [watchlistKey, updateSchema]);
+  }, [watchlistKey, commitSchema]);
 
   /**
    * Applies a transaction to the freshest schema and resolves with its value.
    *
-   * The work happens inside the state updater, so a fill that landed from a
-   * market tick microseconds earlier is part of the state the transaction sees.
-   * Reading `schemaRef` and committing afterwards would instead let the commit
-   * overwrite that fill. React may invoke an updater more than once, which is
-   * harmless here: the transaction is pure and a promise settles once.
+   * The transaction runs against the same mirror every other writer uses, so a
+   * fill that landed from a market tick microseconds earlier is part of the
+   * state this sees.
+   *
+   * The promise is settled here, outside React, rather than from inside the
+   * state updater. A state updater is required to be pure, and this one was not:
+   * it wrote a ref and settled a promise, so its behaviour depended on *when*
+   * React chose to run it, which is not something the dispatch site can observe.
+   * Measured, not assumed: React runs an updater eagerly and synchronously for
+   * an isolated dispatch, but defers it to the render when a second update is
+   * already queued, and skips the render entirely when the updater returns the
+   * state unchanged — which is exactly what a rejected order does, since it
+   * commits `prev`. A settlement that waited on a commit would therefore hang
+   * on every rejection, leaving `withSubmissionLock` holding `submittingRef`
+   * and the order ticket permanently dead.
    */
   const runTransaction = useCallback(
-    <T,>(transaction: (prev: StorageSchema) => Transaction<T>): Promise<T> =>
-      new Promise<T>((resolve) => {
-        updateSchema((prev) => {
-          const { updatedSchema, value } = transaction(prev);
-          schemaRef.current = updatedSchema;
-          resolve(value);
-          return updatedSchema;
-        });
-      }),
-    [updateSchema]
+    <T,>(transaction: (prev: StorageSchema) => Transaction<T>): Promise<T> => {
+      const { updatedSchema, value } = transaction(schemaRef.current);
+      commitSchema(() => updatedSchema);
+      return Promise.resolve(value);
+    },
+    [commitSchema]
   );
 
   const withSubmissionLock = useCallback(
