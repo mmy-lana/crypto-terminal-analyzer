@@ -22,6 +22,7 @@ import {
   StorageSchema,
   TransactionRecord,
 } from '../types/terminal';
+import { DUST_THRESHOLD as ENGINE_DUST_THRESHOLD } from './engine';
 
 /** Crypto trades every calendar day, so annualisation uses a 365-day year. */
 export const TRADING_DAYS_PER_YEAR = 365;
@@ -29,8 +30,16 @@ export const TRADING_DAYS_PER_YEAR = 365;
 /** Daily risk-free rate assumed by the Sharpe ratio, in decimal form. */
 export const DEFAULT_RISK_FREE_RATE_DAILY = 0.0001;
 
-/** Position size at or below which a holding is treated as fully closed. */
-const DUST_THRESHOLD = 0.000001;
+/**
+ * Position size at or below which a holding is treated as fully closed.
+ *
+ * Deliberately the execution engine's constant rather than a second copy of
+ * it. This module rebuilds positions by replaying the transaction log, the
+ * engine writes them by applying fills, and a floor that differed between the
+ * two produced a position that was persisted in one and invisible in the
+ * other: the ledger and the portfolio disagreed about what was held.
+ */
+const DUST_THRESHOLD = ENGINE_DUST_THRESHOLD;
 
 /**
  * Variance below this is float residue, not risk.

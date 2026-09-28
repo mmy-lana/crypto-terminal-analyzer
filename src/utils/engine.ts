@@ -31,8 +31,26 @@ export const TAKER_FEE_RATE = 0.001;
 export const MAKER_FEE_RATE = 0.0005;
 /** Synthetic slippage paid when a market order crosses the spread: 0.05%. */
 export const SLIPPAGE_FACTOR = 0.0005;
-/** Position size at or below which a holding is considered fully closed. */
-export const DUST_THRESHOLD = 0.000001;
+/**
+ * Position size at or below which a holding is considered fully closed.
+ *
+ * This is float residue, not a tradable amount. One micro-unit was far too
+ * coarse: an asset quoted in satoshi can legitimately be held in amounts
+ * smaller than that, and the old floor deleted the row the moment a partial
+ * sell left one behind — taking its cost basis, its allocation and its
+ * position count with it, while the cash from the sell had already been
+ * credited. The operator is left with proceeds from a position the terminal no
+ * longer admits to having held.
+ *
+ * At 1e-11 the only quantities that disappear are ones that cannot be
+ * represented as a position at all: a fully closed line, and the residue a
+ * subtraction like 0.3 - 0.1 - 0.2 leaves behind.
+ *
+ * `finance.ts` reads this same constant rather than keeping a copy, so the
+ * execution path and the analytics path cannot disagree about which positions
+ * exist.
+ */
+export const DUST_THRESHOLD = 1e-11;
 
 /** Machine-readable rejection reasons surfaced by the order ticket. */
 export type ExecutionErrorCode =
@@ -234,6 +252,9 @@ function applyFill(
     const remainingAmount = current.amount - order.amount;
 
     nextHoldings = { ...schema.holdings };
+    // A full exit, and only a full exit, drops the row. A partial sell leaves a
+    // position behind and it is carried forward at its pro-rata cost basis, so
+    // the terminal keeps admitting to what it is still holding.
     if (remainingAmount <= DUST_THRESHOLD) {
       delete nextHoldings[order.symbol];
     } else {

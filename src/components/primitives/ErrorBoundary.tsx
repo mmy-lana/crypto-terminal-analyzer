@@ -11,9 +11,34 @@ export interface ErrorBoundaryProps {
   onError?: (error: Error, info: ErrorInfo) => void;
 }
 
+/**
+ * Opaque handle for a fault, for the operator to quote and support to match
+ * against their own logs.
+ *
+ * It is derived from the error text so the two sides agree, which makes it a
+ * correlation handle rather than a secrecy mechanism — the raw text is simply
+ * never put in front of whoever is reading the screen. That is the whole
+ * point: a stack trace in the DOM reaches anyone with devtools, anyone
+ * screen-sharing, and anyone who screenshots the crash into a ticket.
+ */
+function incidentReference(error: Error): string {
+  const stamp = Date.now().toString(36).toUpperCase();
+  // FNV-1a, held to a fixed width so the token is a stable shape to quote.
+  let hash = 2166136261;
+  const seed = `${error.name}:${error.message}`;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const digest = (hash >>> 0).toString(36).toUpperCase().padStart(7, '0').slice(-7);
+  return `FAULT-${stamp}-${digest}`;
+}
+
 interface ErrorBoundaryState {
   error: Error | null;
   componentStack: string;
+  /** Stable handle for the current fault, quoted in the production crash view. */
+  errorRef: string;
   /** Incremented on every retry so React remounts the subtree. */
   attempt: number;
 }
@@ -27,10 +52,10 @@ interface ErrorBoundaryState {
  * retry the render, or wipe the persisted schema and restart clean.
  */
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  override state: ErrorBoundaryState = { error: null, componentStack: '', attempt: 0 };
+  override state: ErrorBoundaryState = { error: null, componentStack: '', errorRef: '', attempt: 0 };
 
   static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
-    return { error };
+    return { error, errorRef: incidentReference(error) };
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
@@ -41,7 +66,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   }
 
   private readonly handleReset = (): void => {
-    this.setState((prev) => ({ error: null, componentStack: '', attempt: prev.attempt + 1 }));
+    this.setState((prev) => ({ error: null, componentStack: '', errorRef: '', attempt: prev.attempt + 1 }));
   };
 
   private readonly handleWipeAndReload = (): void => {
@@ -57,6 +82,19 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   private readonly handleDump = (): void => {
     const { error, componentStack } = this.state;
     if (!error) return;
+
+    // Read the flag at call time rather than caching it at module scope, so the
+    // disclosure rule under test is the rule that ships.
+    if (!import.meta.env.DEV) {
+      // The console is not a private channel. Anything written here is captured
+      // by whatever the operator runs, and by any error-reporting shim the
+      // embedding page installed. Log a handle they can quote and let field
+      // capture decide what to do with it.
+      // eslint-disable-next-line no-console
+      console.error('[TERMINAL] Render fault', { reference: incidentReference(error) });
+      return;
+    }
+
     // eslint-disable-next-line no-console
     console.error('[TERMINAL] CODE DUMP', {
       message: error.message,
@@ -99,19 +137,33 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
           <div className="flex items-center justify-between border-b border-[#262c36] bg-[#181c24] px-2 py-1">
             <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-amber-500">Code Dump</span>
             <span className="text-[10px] text-neutral-600">
-              {error.name}: {error.message}
+              {import.meta.env.DEV ? `${error.name}: ${error.message}` : this.state.errorRef}
             </span>
           </div>
           {/* Developer detail, not operator detail: sighted users read it on
               screen and everyone can reach it through "Dump To Console" below,
               so it stays out of the accessibility tree. The fault's name and
-              message above it are the part worth announcing. */}
+              message above it are the part worth announcing.
+
+              In production neither the stack nor the component stack is
+              rendered. Both name internal module structure, and on a built
+              bundle they are minified frames that still map back to the source
+              layout. The operator gets the incident reference instead, which is
+              the part they can actually act on. */}
           <pre
             aria-hidden="true"
+            data-incident-ref={import.meta.env.DEV ? undefined : this.state.errorRef}
             className="scrollbar-thin min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2 text-[10px] leading-relaxed text-rose-500/90"
           >
-            {error.stack ?? `${error.name}: ${error.message}`}
-            {this.state.componentStack ? `\n--- COMPONENT STACK ---\n${this.state.componentStack}` : ''}
+            {import.meta.env.DEV
+              ? `${error.stack ?? `${error.name}: ${error.message}`}${
+                  this.state.componentStack ? `
+--- COMPONENT STACK ---
+${this.state.componentStack}` : ''
+                }`
+              : `INCIDENT ${this.state.errorRef}
+
+The diagnostic detail for this fault was withheld from this build. Quote the reference above when reporting it; it identifies the fault without disclosing the internals of the trading kernel.`}
           </pre>
         </section>
 

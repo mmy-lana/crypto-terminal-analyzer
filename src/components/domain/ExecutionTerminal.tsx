@@ -168,9 +168,29 @@ export const ExecutionTerminal: React.FC<ExecutionTerminalProps> = ({ className 
   const applyPreset = useCallback(
     (percent: number) => {
       if (availableForSide <= 0) return;
-      const next = (availableForSide * (percent / 100)) * (side === 'BUY' ? 0.999 : 1);
-      // Trim float dust so "50%" of 0.1 does not read as 0.049999999.
-      setAmountText(String(Number(next.toFixed(8))));
+
+      let next: number;
+      if (side === 'SELL' && percent === 100) {
+        // A full exit has to be the held amount, exactly. Rounding to eight
+        // decimals rounds in both directions: 0.0723456789 becomes 0.07234568,
+        // which is more than the position holds, and the engine compares the
+        // order size against the position with a strict `<`, so the surplus
+        // turns a guaranteed liquidation into INSUFFICIENT_ASSET_BALANCE.
+        //
+        // Clamping to the available amount instead would sell slightly less,
+        // and the leftover would be a real position: at the new dust floor
+        // anything above 1e-11 survives, so "100%" would strand 1e-9 of BTC
+        // with no way for the operator to see the end of it.
+        next = availableForSide;
+      } else {
+        const share = (availableForSide * (percent / 100)) * (side === 'BUY' ? 0.999 : 1);
+        // Trim float dust so "50%" of 0.1 does not read as 0.049999999, and
+        // keep any partial sell strictly inside the position it is drawing on.
+        const rounded = Number(share.toFixed(8));
+        next = side === 'SELL' ? Math.min(rounded, availableForSide) : rounded;
+      }
+
+      setAmountText(String(next));
       setError(null);
     },
     [availableForSide, side]
